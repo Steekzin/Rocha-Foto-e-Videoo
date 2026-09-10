@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  }
+
+  body {
+    background-color: #0c0d0e;
+    color: #f3f4f6;
+    overflow-x: hidden;
+  }
+}
+
+.font-serif-luxury {
+  font-family: 'Playfair Display', 'Cormorant Garamond', Georgia, serif;
+}
+
+.font-editorial {
+  font-family: 'Cormorant Garamond', 'Playfair Display', Georgia, serif;
+}
+
+.font-script {
+  font-family: 'Alex Brush', 'Playfair Display', cursive, serif;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #121417;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2e35;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #c99e64;
+}
+
+/* Glass and photo frame effects */
+.photo-vignette {
+  background: radial-gradient(circle, rgba(0,0,0,0) 60%, rgba(0,0,0,0.6) 100%);
+}
+
+.gold-border {
+  border-color: rgba(201, 158, 100, 0.3);
+}
+
+.gold-gradient-subtle {
+  background: linear-gradient(135deg, rgba(201, 158, 100, 0.15) 0%, rgba(201, 158, 100, 0.03) 100%);
+}

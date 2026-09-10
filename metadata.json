@@ -1,0 +1,6 @@
+{
+  "name": "Rocha Foto & Vídeo",
+  "description": "Plataforma profissional de fotografia e vídeo, portfólio completo e área privada de clientes com seleção de fotos e envio para WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
