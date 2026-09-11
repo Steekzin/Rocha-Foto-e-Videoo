@@ -445,6 +445,17 @@ export const api = {
     return data;
   },
 
+  async batchDeletePortfolioPhotos(photoIds: string[]): Promise<{ success: boolean; count: number; message: string }> {
+    const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-delete`, {
+      method: 'POST',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ photoIds }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao excluir fotografias selecionadas');
+    return data;
+  },
+
   async reorderPortfolioPhotos(photoIds: string[]): Promise<{ success: boolean; photos: PortfolioPhoto[] }> {
     const res = await fetch(`${API_BASE}/admin/portfolio/photos/reorder`, {
       method: 'POST',

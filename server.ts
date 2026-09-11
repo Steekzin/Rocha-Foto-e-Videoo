@@ -1074,7 +1074,9 @@ async function startServer() {
     }
 
     // Delete photos belonging to this category and clean physical files
-    const photosToDelete = db.portfolioPhotos.filter((p) => p.categoryId === id);
+    const photosToDelete = db.portfolioPhotos.filter(
+      (p) => String(p.categoryId) === String(id) || (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())
+    );
     photosToDelete.forEach((photo) => {
       if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
         try {
@@ -1089,8 +1091,15 @@ async function startServer() {
       }
     });
 
-    db.portfolioPhotos = db.portfolioPhotos.filter((p) => p.categoryId !== id);
-    db.portfolioCategories = db.portfolioCategories.filter((c) => c.id !== id);
+    db.portfolioPhotos = db.portfolioPhotos.filter(
+      (p) => String(p.categoryId) !== String(id) && (!p.categoryName || p.categoryName.toLowerCase() !== cat.name.toLowerCase())
+    );
+    if (db.portfolio) {
+      db.portfolio = db.portfolio.filter(
+        (p) => String(p.categoryId) !== String(id) && (!p.category || p.category.toLowerCase() !== cat.name.toLowerCase())
+      );
+    }
+    db.portfolioCategories = db.portfolioCategories.filter((c) => String(c.id) !== String(id));
 
     syncPortfolioLegacy();
     saveDatabase();
@@ -1418,15 +1427,18 @@ async function startServer() {
   // Delete Single Portfolio Photo (Admin Only)
   app.delete('/api/admin/portfolio/photos/:id', requireAdmin, (req: Request, res: Response) => {
     const { id } = req.params;
-    const photo = db.portfolioPhotos.find((p) => p.id === id);
-    if (!photo) {
+    const photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
+    const legacyItem = db.portfolio ? db.portfolio.find((p) => String(p.id) === String(id)) : null;
+    const target = photo || legacyItem;
+    if (!target) {
       return res.status(404).json({ error: 'Fotografia não encontrada.' });
     }
 
-    // Delete physical file from disk
-    if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
+    // Delete physical file from disk if it was uploaded locally
+    const imgUrl = target.imageUrl;
+    if (imgUrl && imgUrl.startsWith('/portfolio/')) {
       try {
-        const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
+        const decoded = decodeURIComponent(imgUrl.replace(/^\/portfolio\//, ''));
         const physicalPath = path.join(PORTFOLIO_DIR, decoded);
         if (fs.existsSync(physicalPath)) {
           fs.unlinkSync(physicalPath);
@@ -1436,11 +1448,55 @@ async function startServer() {
       }
     }
 
-    db.portfolioPhotos = db.portfolioPhotos.filter((p) => p.id !== id);
+    db.portfolioPhotos = db.portfolioPhotos.filter((p) => String(p.id) !== String(id));
+    if (db.portfolio) {
+      db.portfolio = db.portfolio.filter((p) => String(p.id) !== String(id));
+    }
     syncPortfolioLegacy();
     saveDatabase();
 
     res.json({ success: true, message: 'Foto excluída do portfólio.' });
+  });
+
+  // Batch Delete Portfolio Photos (Admin Only)
+  app.post('/api/admin/portfolio/photos/batch-delete', requireAdmin, (req: Request, res: Response) => {
+    const { photoIds } = req.body;
+    if (!Array.isArray(photoIds) || photoIds.length === 0) {
+      return res.status(400).json({ error: 'IDs das fotos não informados.' });
+    }
+
+    const idSet = new Set(photoIds.map((id) => String(id)));
+    let deletedCount = 0;
+
+    db.portfolioPhotos.forEach((photo) => {
+      if (idSet.has(String(photo.id))) {
+        deletedCount++;
+        if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
+          try {
+            const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
+            const physicalPath = path.join(PORTFOLIO_DIR, decoded);
+            if (fs.existsSync(physicalPath)) {
+              fs.unlinkSync(physicalPath);
+            }
+          } catch (err) {
+            console.error('Error removing physical photo file during batch delete:', err);
+          }
+        }
+      }
+    });
+
+    db.portfolioPhotos = db.portfolioPhotos.filter((p) => !idSet.has(String(p.id)));
+    if (db.portfolio) {
+      db.portfolio = db.portfolio.filter((p) => !idSet.has(String(p.id)));
+    }
+    syncPortfolioLegacy();
+    saveDatabase();
+
+    res.json({
+      success: true,
+      count: deletedCount,
+      message: `${deletedCount} fotografia(s) excluída(s) com sucesso.`,
+    });
   });
 
   // Reorder Photos (Admin Only)

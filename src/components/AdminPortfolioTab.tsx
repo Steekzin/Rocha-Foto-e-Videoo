@@ -54,6 +54,13 @@ export const AdminPortfolioTab: React.FC = () => {
   const [editingCategory, setEditingCategory] = useState<PortfolioCategory | null>(null);
   const [categoryToDelete, setCategoryToDelete] = useState<PortfolioCategory | null>(null);
 
+  // Photo Deletion and Selection states
+  const [photoToDelete, setPhotoToDelete] = useState<PortfolioPhoto | null>(null);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
+  const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+  const [renumberTargetCategory, setRenumberTargetCategory] = useState<string | null>(null);
+  const [showResetSeedModal, setShowResetSeedModal] = useState(false);
+
   // Photo CRUD Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadCategory, setUploadCategory] = useState('');
@@ -293,16 +300,45 @@ export const AdminPortfolioTab: React.FC = () => {
     }
   };
 
-  const handleDeletePhoto = async (photo: PortfolioPhoto) => {
-    if (!window.confirm(`Tem certeza que deseja excluir a foto #${photo.number || ''} "${photo.title}"?`)) return;
+  const handleDeletePhoto = (photo: PortfolioPhoto) => {
+    setPhotoToDelete(photo);
+  };
+
+  const confirmDeletePhoto = async () => {
+    if (!photoToDelete) return;
     try {
       setLoading(true);
-      await api.deletePortfolioPhoto(photo.id);
-      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
-      setStatusMessage({ type: 'success', text: `Fotografia removida com sucesso.` });
+      await api.deletePortfolioPhoto(photoToDelete.id);
+      setPhotos((prev) => prev.filter((p) => String(p.id) !== String(photoToDelete.id)));
+      setSelectedPhotoIds((prev) => prev.filter((id) => id !== String(photoToDelete.id)));
+      setStatusMessage({
+        type: 'success',
+        text: `Fotografia #${photoToDelete.number || photoToDelete.title} removida com sucesso.`,
+      });
+      setPhotoToDelete(null);
       await loadAllData();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao excluir foto' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmBatchDelete = async () => {
+    if (selectedPhotoIds.length === 0) return;
+    try {
+      setLoading(true);
+      const res = await api.batchDeletePortfolioPhotos(selectedPhotoIds);
+      setPhotos((prev) => prev.filter((p) => !selectedPhotoIds.includes(String(p.id))));
+      setStatusMessage({
+        type: 'success',
+        text: res.message || `${res.count} fotos excluídas com sucesso.`,
+      });
+      setSelectedPhotoIds([]);
+      setShowBatchDeleteModal(false);
+      await loadAllData();
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Erro ao excluir fotos' });
     } finally {
       setLoading(false);
     }
@@ -334,15 +370,21 @@ export const AdminPortfolioTab: React.FC = () => {
     }
   };
 
-  const handleRenumberCategory = async (catName?: string) => {
-    const scope = catName && catName !== 'Todos' ? `na categoria "${catName}"` : 'em todas as categorias';
-    if (!window.confirm(`Deseja renumerar sequencialmente (001, 002, 003...) todas as fotos ${scope}?`)) return;
+  const handleRenumberCategory = (catName?: string) => {
+    setRenumberTargetCategory(catName || 'ALL');
+  };
 
+  const confirmRenumberCategory = async () => {
+    const catName = renumberTargetCategory;
+    setRenumberTargetCategory(null);
     try {
       setLoading(true);
-      const res = await api.renumberPortfolioPhotos(catName && catName !== 'Todos' ? catName : undefined);
+      const res = await api.renumberPortfolioPhotos(catName && catName !== 'ALL' && catName !== 'Todos' ? catName : undefined);
       setPhotos(res.photos);
-      setStatusMessage({ type: 'success', text: `Sucesso! ${res.renumberedCount} fotografias foram renumeradas sequencialmente.` });
+      setStatusMessage({
+        type: 'success',
+        text: `Sucesso! ${res.renumberedCount} fotografias foram renumeradas sequencialmente.`,
+      });
       await loadAllData();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao renumerar fotografias' });
@@ -442,13 +484,17 @@ export const AdminPortfolioTab: React.FC = () => {
     }
   };
 
-  const handleResetDemo = async () => {
-    if (!window.confirm('Deseja restaurar as fotos de demonstração iniciais?')) return;
+  const handleResetDemo = () => {
+    setShowResetSeedModal(true);
+  };
+
+  const confirmResetDemo = async () => {
+    setShowResetSeedModal(false);
     try {
       setLoading(true);
       await api.resetPortfolioDemo();
       await loadAllData();
-      setStatusMessage({ type: 'info', text: 'Portfólio resetado para os dados de demonstração.' });
+      setStatusMessage({ type: 'info', text: 'Portfólio resetado para os dados iniciais com sucesso.' });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: 'Erro ao restaurar demo: ' + err.message });
     } finally {
@@ -737,6 +783,55 @@ export const AdminPortfolioTab: React.FC = () => {
             </div>
           </div>
 
+          {/* Batch Actions & Selection Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#0f1217] p-3 rounded-xl border border-[#20252e]">
+            <div className="flex items-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPhotoIds.length === filteredPhotos.length && filteredPhotos.length > 0) {
+                    setSelectedPhotoIds([]);
+                  } else {
+                    setSelectedPhotoIds(filteredPhotos.map((p) => String(p.id)));
+                  }
+                }}
+                className="px-2.5 py-1 bg-[#171b22] hover:bg-[#222834] text-gray-300 rounded border border-[#2b313d] transition-colors cursor-pointer"
+              >
+                {selectedPhotoIds.length === filteredPhotos.length && filteredPhotos.length > 0
+                  ? 'Desmarcar Todas'
+                  : 'Selecionar Todas'}
+              </button>
+
+              <span className="text-gray-400">
+                {selectedPhotoIds.length > 0 ? (
+                  <strong className="text-[#c99e64]">{selectedPhotoIds.length} foto(s) selecionada(s)</strong>
+                ) : (
+                  <span>{filteredPhotos.length} fotos exibidas</span>
+                )}
+              </span>
+            </div>
+
+            {selectedPhotoIds.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedPhotoIds([])}
+                  className="px-2.5 py-1 text-xs text-gray-400 hover:text-white cursor-pointer"
+                >
+                  Limpar seleção
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowBatchDeleteModal(true)}
+                  className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer shadow-md transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Excluir Selecionadas ({selectedPhotoIds.length})</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Photos Visual Grid */}
           {filteredPhotos.length === 0 ? (
             <div className="py-16 text-center bg-[#12151a] rounded-xl border border-[#20252e] p-8">
@@ -772,9 +867,26 @@ export const AdminPortfolioTab: React.FC = () => {
                       className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-300"
                     />
 
-                    {/* Number Badge */}
-                    <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/80 backdrop-blur-md rounded font-mono text-[11px] font-bold text-[#c99e64] border border-white/10 shadow">
-                      #{photo.number || (index + 1)}
+                    {/* Selection Checkbox & Number Badge */}
+                    <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedPhotoIds.includes(String(photo.id))}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          const sid = String(photo.id);
+                          if (e.target.checked) {
+                            setSelectedPhotoIds((prev) => [...prev, sid]);
+                          } else {
+                            setSelectedPhotoIds((prev) => prev.filter((id) => id !== sid));
+                          }
+                        }}
+                        title="Selecionar fotografia"
+                        className="w-4 h-4 rounded border-gray-600 bg-black/80 text-[#c99e64] focus:ring-[#c99e64] cursor-pointer accent-[#c99e64]"
+                      />
+                      <span className="px-1.5 py-0.5 bg-black/80 backdrop-blur-md rounded font-mono text-[10px] font-bold text-[#c99e64] border border-white/10 shadow">
+                        #{photo.number || (index + 1)}
+                      </span>
                     </div>
 
                     {/* Status Badge (Active/Inactive) */}
@@ -1706,7 +1818,7 @@ export const AdminPortfolioTab: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setCategoryToDelete(null)}
-                className="px-4 py-2 bg-[#171b22] text-white rounded-lg text-xs"
+                className="px-4 py-2 bg-[#171b22] text-white rounded-lg text-xs cursor-pointer"
               >
                 Cancelar
               </button>
@@ -1714,9 +1826,210 @@ export const AdminPortfolioTab: React.FC = () => {
                 type="button"
                 onClick={handleDeleteCategory}
                 disabled={loading}
-                className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs"
+                className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs cursor-pointer"
               >
                 {loading ? 'Excluindo...' : 'Confirmar Exclusão'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: CONFIRMAR EXCLUSÃO INDIVIDUAL DE FOTO */}
+      {/* ========================================================= */}
+      {photoToDelete && (
+        <div
+          onClick={() => setPhotoToDelete(null)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-md w-full p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 text-red-400 mb-3">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="font-serif-luxury text-lg text-white">Excluir Fotografia</h3>
+            </div>
+
+            <div className="flex items-center gap-4 p-3 bg-[#181c24] rounded-xl border border-[#262c38] mb-4">
+              <img
+                src={photoToDelete.imageUrl}
+                alt={photoToDelete.title}
+                className="w-16 h-16 object-cover rounded-lg border border-[#333a4a] bg-black/40"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 bg-[#c99e64]/20 text-[#c99e64] rounded font-bold">
+                    #{photoToDelete.number || '---'}
+                  </span>
+                  <span className="text-[11px] text-gray-400 truncate">
+                    {photoToDelete.category}
+                  </span>
+                </div>
+                <h4 className="text-sm font-medium text-white truncate">{photoToDelete.title}</h4>
+                {photoToDelete.caption && (
+                  <p className="text-[11px] text-gray-400 truncate mt-0.5">{photoToDelete.caption}</p>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-4">
+              Tem certeza que deseja excluir permanentemente esta foto do portfólio? Essa ação removerá a imagem do site.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1e232b]">
+              <button
+                type="button"
+                onClick={() => setPhotoToDelete(null)}
+                className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeletePhoto}
+                disabled={loading}
+                className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition-colors cursor-pointer shadow-md shadow-red-900/30"
+              >
+                {loading ? 'Excluindo...' : 'Sim, Excluir Foto'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: CONFIRMAR EXCLUSÃO EM LOTE (BATCH DELETE) */}
+      {/* ========================================================= */}
+      {showBatchDeleteModal && (
+        <div
+          onClick={() => setShowBatchDeleteModal(false)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-md w-full p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 text-red-400 mb-3">
+              <Trash2 className="w-6 h-6" />
+              <h3 className="font-serif-luxury text-lg text-white">Excluir Fotos Selecionadas</h3>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-3 leading-relaxed">
+              Você selecionou <strong className="text-[#c99e64]">{selectedPhotoIds.length} fotografias</strong> para
+              serem excluídas permanentemente do portfólio.
+            </p>
+
+            <div className="p-3 bg-red-950/30 border border-red-800/50 rounded-xl text-red-200 text-xs mb-4">
+              <strong>Atenção:</strong> Todas as fotografias selecionadas e seus respectivos arquivos serão removidos do servidor.
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1e232b]">
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteModal(false)}
+                className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmBatchDelete}
+                disabled={loading}
+                className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition-colors cursor-pointer shadow-md shadow-red-900/30"
+              >
+                {loading ? 'Excluindo...' : `Sim, Excluir ${selectedPhotoIds.length} Fotos`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: CONFIRMAR RENUMERAÇÃO 001, 002... */}
+      {/* ========================================================= */}
+      {renumberTargetCategory && (
+        <div
+          onClick={() => setRenumberTargetCategory(null)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-md w-full p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 text-[#c99e64] mb-3">
+              <Hash className="w-6 h-6" />
+              <h3 className="font-serif-luxury text-lg text-white">Renumerar Sequencialmente</h3>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-4 leading-relaxed">
+              Deseja renumerar sequencialmente todas as fotografias{' '}
+              {renumberTargetCategory && renumberTargetCategory !== 'ALL' && renumberTargetCategory !== 'Todos' ? (
+                <strong className="text-white">na categoria "{renumberTargetCategory}"</strong>
+              ) : (
+                <strong className="text-white">de todas as categorias</strong>
+              )}{' '}
+              começando em <strong className="text-[#c99e64]">#001, #002, #003...</strong> de acordo com a ordem atual?
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1e232b]">
+              <button
+                type="button"
+                onClick={() => setRenumberTargetCategory(null)}
+                className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmRenumberCategory}
+                disabled={loading}
+                className="px-5 py-2 bg-[#c99e64] hover:bg-[#d8ae74] text-black font-bold rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                {loading ? 'Renumerando...' : 'Confirmar Renumeração'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: CONFIRMAR RESTAURAÇÃO DE DADOS DE DEMO */}
+      {/* ========================================================= */}
+      {showResetSeedModal && (
+        <div
+          onClick={() => setShowResetSeedModal(false)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-md w-full p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 text-amber-400 mb-3">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="font-serif-luxury text-lg text-white">Restaurar Portfólio Inicial</h3>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-4 leading-relaxed">
+              Tem certeza que deseja restaurar as categorias e fotos padrão de demonstração do estúdio Rocha Foto & Vídeo?
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1e232b]">
+              <button
+                type="button"
+                onClick={() => setShowResetSeedModal(false)}
+                className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmResetDemo}
+                disabled={loading}
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                {loading ? 'Restaurando...' : 'Sim, Restaurar'}
               </button>
             </div>
           </div>

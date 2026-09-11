@@ -1,15 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Camera,
   ChevronLeft,
   ChevronRight,
-  Filter,
   Maximize2,
   X,
-  Sparkles,
-  ExternalLink,
+  Search,
   MessageCircle,
+  ExternalLink,
 } from 'lucide-react';
 import { PortfolioItem, PortfolioCategory } from '../types.js';
 import { api } from '../services/api.js';
@@ -27,9 +26,11 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
   const [categories, setCategories] = useState<PortfolioCategory[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showSearch, setShowSearch] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  const [isRealPhotos, setIsRealPhotos] = useState<boolean>(false);
+
+  const galleryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function loadPortfolio() {
@@ -41,7 +42,6 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
         ]);
         setCategories(catsData);
         setItems(photosData);
-        setIsRealPhotos(photosData.some((p) => p.imageUrl.startsWith('/portfolio/')));
       } catch (err) {
         console.error('Error loading portfolio:', err);
       } finally {
@@ -60,17 +60,18 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
     return counts;
   }, [items]);
 
-  // Merge database active categories with categories present in items
+  // Categories list ordered according to admin settings
   const allCategories = React.useMemo(() => {
     const catNames: string[] = ['Todos'];
+    // Add active categories from admin in their defined order
     categories.forEach((c) => {
-      if (!catNames.includes(c.name)) {
+      if (c.active !== false && !catNames.includes(c.name)) {
         catNames.push(c.name);
       }
     });
-    // Add any photo category not in categories list
+    // Add any category that has items but might not be in categories table
     items.forEach((i) => {
-      if (!catNames.includes(i.category)) {
+      if (i.category && !catNames.includes(i.category)) {
         catNames.push(i.category);
       }
     });
@@ -91,6 +92,17 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
       );
     });
   }, [items, selectedCategory, searchQuery]);
+
+  const handleSelectCategory = (cat: string) => {
+    setSelectedCategory(cat);
+    // Smoothly ensure the photo section is in view
+    if (galleryRef.current) {
+      const rect = galleryRef.current.getBoundingClientRect();
+      if (rect.top < 0 || rect.top > window.innerHeight) {
+        galleryRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  };
 
   // Keyboard navigation for lightbox
   useEffect(() => {
@@ -130,144 +142,176 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
 
   return (
     <div
-      className={`w-full min-h-screen py-16 transition-colors ${
-        isLight ? 'bg-[#fcfcfc] text-[#111827]' : 'bg-[#0c0d0e] text-[#f3f4f6]'
+      className={`w-full min-h-screen pt-12 pb-24 transition-colors ${
+        isLight ? 'bg-white text-[#111827]' : 'bg-[#0c0d0e] text-[#f3f4f6]'
       }`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Title Header */}
-        <div className="text-center max-w-3xl mx-auto mb-8">
-          <div className="inline-flex items-center gap-2 text-[#c99e64] text-xs font-semibold uppercase tracking-[0.25em] mb-2">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Galeria Artística Autoral</span>
-          </div>
+        {/* ========================================================= */}
+        {/* HEADER DO PORTFÓLIO (ESTILO CONFORME REFERÊNCIA DO CLIENTE) */}
+        {/* ========================================================= */}
+        <header className="text-center max-w-4xl mx-auto mb-8 sm:mb-10">
+          {/* Cursive / Script Title */}
           <h1
-            className={`font-serif-luxury text-4xl sm:text-5xl font-normal ${
-              isLight ? 'text-gray-900' : 'text-white'
+            className={`font-script text-5xl sm:text-6xl md:text-7xl font-normal tracking-wide transition-colors ${
+              isLight ? 'text-neutral-900' : 'text-white'
             }`}
           >
-            Nosso Portfólio
+            Portfólio
           </h1>
+
+          {/* Thin subtle centered divider */}
+          <div
+            className={`w-20 sm:w-24 h-[1.5px] mx-auto my-3 sm:my-4 transition-colors ${
+              isLight ? 'bg-neutral-300' : 'bg-neutral-700'
+            }`}
+          />
+
+          {/* Subtitle */}
           <p
-            className={`text-xs sm:text-sm mt-3 ${
-              isLight ? 'text-gray-600' : 'text-[#9ca3af]'
+            className={`text-sm sm:text-base md:text-lg font-light max-w-2xl mx-auto leading-relaxed transition-colors ${
+              isLight ? 'text-neutral-600' : 'text-neutral-300'
             }`}
           >
-            Explore trabalhos fotográficos autorais selecionados em diferentes formatos, celebrações e histórias reais.
+            Veja aqui nossas fotos de eventos mais recentes. Em Montes Claros e Minas Gerais
           </p>
 
-          {isRealPhotos && (
-            <div className="mt-4 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#c99e64]/10 border border-[#c99e64]/30 text-[#c99e64] text-xs font-medium">
-              <Camera className="w-3.5 h-3.5" />
-              <span>Fotografias reais da Rocha Foto & Vídeo</span>
-            </div>
-          )}
-        </div>
-
-        {/* Search and Quick Filters Bar */}
-        <div className="max-w-md mx-auto mb-6">
-          <div className="relative">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar por estilo, momento ou ensaio..."
-              className={`w-full pl-4 pr-10 py-2.5 rounded-full text-xs transition-colors border ${
-                isLight
-                  ? 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-[#c99e64]'
-                  : 'bg-[#14171d] border-[#252a34] text-white placeholder-gray-500 focus:border-[#c99e64]'
-              } focus:outline-none`}
-            />
-            {searchQuery && (
+          {/* Search Toggle (Optional discreet search) */}
+          <div className="mt-4 flex items-center justify-center">
+            {!showSearch ? (
               <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs"
+                type="button"
+                onClick={() => setShowSearch(true)}
+                className={`inline-flex items-center gap-1.5 text-xs transition-colors py-1 px-3 rounded-full border ${
+                  isLight
+                    ? 'border-neutral-200 text-neutral-500 hover:text-neutral-900 hover:border-neutral-300 bg-neutral-50'
+                    : 'border-[#222730] text-neutral-400 hover:text-white hover:border-neutral-600 bg-[#12151a]'
+                }`}
               >
-                <X className="w-4 h-4" />
+                <Search className="w-3.5 h-3.5" />
+                <span>Buscar por nome ou momento</span>
               </button>
+            ) : (
+              <div className="relative w-full max-w-sm mx-auto">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar fotografias..."
+                  autoFocus
+                  className={`w-full pl-4 pr-10 py-1.5 text-xs rounded-full border transition-colors ${
+                    isLight
+                      ? 'bg-neutral-50 border-neutral-300 text-neutral-900 placeholder-neutral-400 focus:border-[#c99e64]'
+                      : 'bg-[#14171d] border-[#2a2f3b] text-white placeholder-neutral-500 focus:border-[#c99e64]'
+                  } focus:outline-none`}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setShowSearch(false);
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             )}
           </div>
-        </div>
+        </header>
 
-        {/* Categories Bar: Horizontal scroll on mobile, wrap on desktop */}
-        <div className="mb-10">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-4 pt-1 no-scrollbar md:flex-wrap md:justify-center">
-            {allCategories.map((cat) => {
-              const isActive = selectedCategory === cat;
-              const count = categoryCounts[cat] || 0;
-              // If not "Todos" and has 0 photos, skip unless it's the active one
-              if (cat !== 'Todos' && count === 0 && !isActive) return null;
+        {/* ========================================================= */}
+        {/* CATEGORIAS EM LINHA (INLINE WRAP LINKS CONFORME REFERÊNCIA) */}
+        {/* ========================================================= */}
+        <nav
+          aria-label="Categorias do Portfólio"
+          className="flex flex-wrap justify-center items-center gap-x-4 sm:gap-x-6 gap-y-2 sm:gap-y-2.5 max-w-5xl mx-auto px-2 sm:px-4 mb-10 sm:mb-12 text-center"
+        >
+          {allCategories.map((cat) => {
+            const isActive = selectedCategory === cat;
+            const displayName = cat === 'Todos' ? 'Mostrar Todos' : cat;
 
-              return (
-                <button
-                  key={cat}
-                  id={`cat-btn-${cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
-                  onClick={() => {
-                    setSelectedCategory(cat);
-                  }}
-                  className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-medium tracking-wider uppercase transition-all duration-200 cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                    isActive
-                      ? 'bg-[#c99e64] text-[#0c0d0e] shadow-md shadow-[#c99e64]/20 font-semibold'
-                      : isLight
-                      ? 'bg-white text-gray-700 hover:text-black hover:bg-gray-100 border border-gray-200'
-                      : 'bg-[#14171d] text-[#9ca3af] hover:text-white hover:bg-[#1f232c] border border-[#222730]'
-                  }`}
-                >
-                  <span>{cat}</span>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                      isActive ? 'bg-black/20 text-black font-bold' : 'bg-gray-800/40 text-gray-400'
-                    }`}
-                  >
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+            return (
+              <button
+                key={cat}
+                type="button"
+                id={`cat-btn-${cat.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                onClick={() => handleSelectCategory(cat)}
+                className={`text-xs sm:text-[13.5px] transition-all duration-200 cursor-pointer relative py-1 px-1 whitespace-nowrap ${
+                  isActive
+                    ? isLight
+                      ? 'text-neutral-950 font-semibold underline underline-offset-8 decoration-[#c99e64] decoration-2'
+                      : 'text-white font-semibold underline underline-offset-8 decoration-[#c99e64] decoration-2'
+                    : isLight
+                    ? 'text-neutral-600 hover:text-neutral-950 hover:underline hover:underline-offset-8 hover:decoration-neutral-300'
+                    : 'text-neutral-400 hover:text-white hover:underline hover:underline-offset-8 hover:decoration-neutral-600'
+                }`}
+              >
+                <span>{displayName}</span>
+              </button>
+            );
+          })}
+        </nav>
 
-        {/* Photo Grid with Smooth Motion Reorganization */}
+        {/* Anchor for smooth scroll on category selection */}
+        <div ref={galleryRef} />
+
+        {/* ========================================================= */}
+        {/* GRADE DE FOTOGRAFIAS COM TRANSIÇÃO ANIMADA PUXADA */}
+        {/* ========================================================= */}
         {loading ? (
           <div className="py-24 text-center">
             <div className="w-8 h-8 border-2 border-[#c99e64] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-xs text-[#9ca3af] tracking-widest uppercase">Carregando portfólio autoral...</p>
+            <p className="text-xs text-neutral-400 tracking-widest uppercase">Carregando portfólio...</p>
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="py-20 text-center bg-[#111317] rounded-xl border border-[#20242c] p-8 max-w-md mx-auto">
+          <div
+            className={`py-16 text-center rounded-2xl border p-8 max-w-md mx-auto ${
+              isLight ? 'bg-neutral-50 border-neutral-200' : 'bg-[#111317] border-[#20242c]'
+            }`}
+          >
             <Camera className="w-10 h-10 text-[#c99e64] mx-auto mb-3 opacity-60" />
-            <h3 className="text-base font-serif-luxury text-white">Nenhuma fotografia encontrada</h3>
-            <p className="text-xs text-[#9ca3af] mt-1 mb-4">
+            <h3 className={`text-base font-serif-luxury ${isLight ? 'text-neutral-900' : 'text-white'}`}>
+              Nenhuma fotografia encontrada
+            </h3>
+            <p className={`text-xs mt-1 mb-4 ${isLight ? 'text-neutral-600' : 'text-neutral-400'}`}>
               {searchQuery
-                ? `Não encontramos resultados para "${searchQuery}".`
-                : 'Estamos catalogando novas fotografias para esta categoria.'}
+                ? `Não encontramos fotos para "${searchQuery}".`
+                : `Nenhuma fotografia catalogada em "${selectedCategory}".`}
             </p>
             <button
+              type="button"
               onClick={() => {
                 setSelectedCategory('Todos');
                 setSearchQuery('');
               }}
-              className="px-4 py-2 bg-[#c99e64] text-[#0c0d0e] rounded-full text-xs font-semibold uppercase tracking-wider"
+              className="px-4 py-2 bg-[#c99e64] text-neutral-950 rounded-full text-xs font-semibold uppercase tracking-wider hover:opacity-90 transition-opacity"
             >
-              Ver Todas as Fotos ({items.length})
+              Mostrar Todos ({items.length})
             </button>
           </div>
         ) : (
-          <motion.div
-            layout
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5"
-          >
-            <AnimatePresence>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={selectedCategory + (searchQuery ? `-${searchQuery}` : '')}
+              initial={{ opacity: 0, y: 36, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -24, scale: 0.98 }}
+              transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+            >
               {filteredItems.map((item, index) => (
                 <motion.div
                   key={item.id}
-                  layout
-                  initial={{ opacity: 0, scale: 0.94 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.94 }}
-                  transition={{ duration: 0.3 }}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.35, delay: Math.min(index * 0.035, 0.35) }}
                   onClick={() => openLightbox(index)}
-                  className="group relative bg-[#12151a] rounded-xl overflow-hidden border border-[#20252e] cursor-pointer hover:border-[#c99e64]/60 transition-all duration-300 shadow-md hover:shadow-xl"
+                  className={`group relative rounded-xl overflow-hidden border cursor-pointer transition-all duration-300 shadow-sm hover:shadow-xl ${
+                    isLight
+                      ? 'bg-neutral-50 border-neutral-200/80 hover:border-[#c99e64]/60'
+                      : 'bg-[#12151a] border-[#20252e] hover:border-[#c99e64]/60'
+                  }`}
                 >
                   <div className="relative aspect-[4/5] overflow-hidden bg-[#181b22]">
                     <img
@@ -277,21 +321,21 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                       decoding="async"
                       className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
                       onError={(e) => {
-                        // If local image fails, show subtle fallback
                         const target = e.currentTarget;
                         target.onerror = null;
-                        target.src = 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80';
+                        target.src =
+                          'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80';
                       }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-75 group-hover:opacity-95 transition-opacity" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-70 group-hover:opacity-95 transition-opacity" />
 
                     {/* Category pill & Visual Number */}
-                    <div className="absolute top-3 left-3 flex items-center gap-1.5">
-                      <span className="px-2.5 py-1 bg-black/70 backdrop-blur-md rounded-full text-[10px] uppercase tracking-wider text-[#c99e64] font-medium border border-[#c99e64]/30">
+                    <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
+                      <span className="px-2.5 py-0.5 bg-black/70 backdrop-blur-md rounded-full text-[10px] uppercase tracking-wider text-[#c99e64] font-medium border border-[#c99e64]/30">
                         {item.category}
                       </span>
                       {item.number && (
-                        <span className="px-2 py-1 bg-black/80 backdrop-blur-md rounded-full text-[10px] font-mono font-bold text-white/90 border border-white/15">
+                        <span className="px-2 py-0.5 bg-black/80 backdrop-blur-md rounded-full text-[10px] font-mono font-bold text-white/90 border border-white/15">
                           #{item.number}
                         </span>
                       )}
@@ -299,18 +343,18 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
 
                     {/* Featured badge if marked */}
                     {item.featured && (
-                      <span className="absolute top-3 right-12 px-2 py-0.5 bg-[#c99e64] text-black rounded-full text-[9px] uppercase font-bold tracking-wider">
+                      <span className="absolute top-3 right-12 px-2 py-0.5 bg-[#c99e64] text-black rounded-full text-[9px] uppercase font-bold tracking-wider z-10">
                         Destaque
                       </span>
                     )}
 
                     {/* Hover expand icon */}
-                    <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity z-10">
                       <Maximize2 className="w-3.5 h-3.5" />
                     </div>
 
-                    {/* Bottom Caption */}
-                    <div className="absolute bottom-3 left-3 right-3 text-left">
+                    {/* Bottom Title & Caption */}
+                    <div className="absolute bottom-3 left-3 right-3 text-left z-10">
                       <h3 className="text-sm font-serif-luxury text-white leading-snug group-hover:text-[#c99e64] transition-colors line-clamp-1">
                         {item.title}
                       </h3>
@@ -323,12 +367,14 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                   </div>
                 </motion.div>
               ))}
-            </AnimatePresence>
-          </motion.div>
+            </motion.div>
+          </AnimatePresence>
         )}
       </div>
 
-      {/* LIGHTBOX MODAL WITH KEYBOARD AND MOBILE GESTURE SUPPORT */}
+      {/* ========================================================= */}
+      {/* LIGHTBOX MODAL DE VISUALIZAÇÃO AMPLIADA */}
+      {/* ========================================================= */}
       {currentLightboxItem && (
         <div
           id="lightbox-overlay"
@@ -337,6 +383,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
         >
           {/* Close button */}
           <button
+            type="button"
             onClick={closeLightbox}
             className="absolute top-5 right-5 z-20 p-2.5 text-gray-300 hover:text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer shadow-lg"
             aria-label="Fechar ampliação"
@@ -346,6 +393,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
 
           {/* Prev button */}
           <button
+            type="button"
             onClick={prevPhoto}
             className="absolute left-4 top-1/2 -translate-y-1/2 z-20 p-3 text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer flex items-center justify-center shadow-lg"
             aria-label="Foto anterior"
@@ -355,6 +403,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
 
           {/* Next button */}
           <button
+            type="button"
             onClick={nextPhoto}
             className="absolute right-4 top-1/2 -translate-y-1/2 z-20 p-3 text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer flex items-center justify-center shadow-lg"
             aria-label="Próxima foto"
@@ -383,8 +432,16 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                 </span>
                 <span className="text-gray-500">•</span>
                 <span className="text-[11px] text-gray-400">
-                  Foto {((lightboxIndex ?? 0) + 1)} de {filteredItems.length}
+                  Foto {(lightboxIndex ?? 0) + 1} de {filteredItems.length}
                 </span>
+                {currentLightboxItem.number && (
+                  <>
+                    <span className="text-gray-500">•</span>
+                    <span className="text-[11px] font-mono text-[#c99e64] font-bold">
+                      #{currentLightboxItem.number}
+                    </span>
+                  </>
+                )}
               </div>
               <h2 className="text-lg sm:text-xl font-serif-luxury text-white">
                 {currentLightboxItem.title}
@@ -398,15 +455,15 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
               {/* Action Buttons in Lightbox */}
               <div className="mt-3 flex items-center justify-center gap-3">
                 <a
-                  href={`https://wa.me/5511999999999?text=${encodeURIComponent(
-                    `Olá, Rocha Foto & Vídeo! Adorei a foto "${currentLightboxItem.title}" da categoria ${currentLightboxItem.category} do portfólio. Gostaria de saber mais sobre este estilo!`
+                  href={`https://wa.me/5538999999999?text=${encodeURIComponent(
+                    `Olá, Rocha Foto & Vídeo! Adorei a foto "${currentLightboxItem.title}" da categoria ${currentLightboxItem.category} (Ref: #${currentLightboxItem.number || '001'}). Gostaria de solicitar um orçamento para meu evento!`
                   )}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#25D366] text-black text-xs font-semibold hover:opacity-90 transition-opacity"
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#25D366] text-black text-xs font-semibold hover:opacity-90 transition-opacity"
                 >
                   <MessageCircle className="w-3.5 h-3.5" />
-                  <span>Consultar estilo no WhatsApp</span>
+                  <span>Consultar no WhatsApp</span>
                 </a>
                 <a
                   href={currentLightboxItem.imageUrl}
