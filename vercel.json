@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/portfolio/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/((?!api/|portfolio/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

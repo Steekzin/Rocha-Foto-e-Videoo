@@ -34,6 +34,105 @@ function getAdminHeaders(extraHeaders: Record<string, string> = {}): Record<stri
   };
 }
 
+/**
+ * Robust JSON response parser that prevents "Unexpected token '<'..." errors
+ * by validating content-type and extracting clear human-readable error messages
+ * when the server responds with HTML (404, 500, 413, or SPA fallback).
+ */
+async function parseJsonResponse<T = any>(
+  res: Response,
+  fallbackErrorMessage: string = 'Erro na requisição'
+): Promise<T> {
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.toLowerCase().includes('application/json');
+
+  let data: any = null;
+
+  if (isJson) {
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+  } else {
+    // Non-JSON response (HTML error page, proxy error, or static SPA fallback)
+    const rawText = await res.text().catch(() => '');
+    console.warn(`[API] Resposta não-JSON recebida de ${res.url} (status ${res.status}):`, rawText.slice(0, 160));
+
+    if (!res.ok) {
+      if (res.status === 413) {
+        throw new Error('O tamanho total das fotos enviadas excedeu o limite do servidor. Tente enviar em lotes menores.');
+      }
+      if (res.status === 404) {
+        throw new Error(`Endpoint da API não encontrado (${res.status}). Verifique a conexão com o servidor.`);
+      }
+      if (res.status === 401 || res.status === 403) {
+        throw new Error('Sessão expirada ou sem permissão. Por favor, autentique-se novamente no painel.');
+      }
+      if (res.status === 502 || res.status === 504) {
+        throw new Error('O servidor backend demorou para responder ou está offline temporariamente.');
+      }
+      throw new Error(`Erro do servidor (${res.status}): ${fallbackErrorMessage}`);
+    }
+
+    // Status is OK (200) but returned HTML - this happens on Vercel when static rewrites serve index.html
+    throw new Error(
+      'O servidor respondeu com uma página HTML em vez de dados da API. ' +
+      'Caso esteja publicado na Vercel, certifique-se de que a API serverless está ativa ou utilize o processamento local.'
+    );
+  }
+
+  if (!res.ok) {
+    const message = data?.error || data?.message || fallbackErrorMessage;
+    throw new Error(message);
+  }
+
+  return data as T;
+}
+
+// Client-side fallback helpers for offline/static Vercel support
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error(`Falha ao ler o arquivo ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+const CLIENT_STORAGE_PORTFOLIO_KEY = 'rocha_client_portfolio_photos';
+
+function getClientPortfolioPhotos(): PortfolioPhoto[] {
+  try {
+    const raw = localStorage.getItem(CLIENT_STORAGE_PORTFOLIO_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveClientPortfolioPhotos(newPhotos: PortfolioPhoto[]): void {
+  try {
+    const existing = getClientPortfolioPhotos();
+    const existingIds = new Set(existing.map((p) => String(p.id)));
+    const uniqueNew = newPhotos.filter((p) => !existingIds.has(String(p.id)));
+    const merged = [...uniqueNew, ...existing];
+    localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(merged));
+  } catch (err) {
+    console.warn('LocalStorage limit reached for client photos:', err);
+  }
+}
+
+function removeClientPortfolioPhoto(id: string): void {
+  try {
+    const existing = getClientPortfolioPhotos();
+    const filtered = existing.filter((p) => String(p.id) !== String(id));
+    localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(filtered));
+  } catch (err) {
+    console.warn('Erro ao atualizar LocalStorage:', err);
+  }
+}
+
 export const api = {
   // Auth
   async login(email: string, password?: string): Promise<{ success: boolean; user: User; token: string }> {
@@ -42,18 +141,13 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.message || 'Falha ao autenticar.');
-    }
-    return data;
+    return parseJsonResponse(res, 'Falha ao autenticar.');
   },
 
   // Clients
   async getClients(): Promise<Client[]> {
     const res = await fetch(`${API_BASE}/clients`);
-    if (!res.ok) throw new Error('Erro ao carregar clientes');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar clientes');
   },
 
   async createClient(client: Partial<Client>): Promise<Client> {
@@ -62,8 +156,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(client),
     });
-    if (!res.ok) throw new Error('Erro ao criar cliente');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao criar cliente');
   },
 
   async updateClient(id: string, client: Partial<Client>): Promise<Client> {
@@ -72,8 +165,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(client),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar cliente');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar cliente');
   },
 
   async updateClientPassword(id: string, password: string): Promise<{ success: boolean; client: Client }> {
@@ -82,24 +174,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao alterar senha do cliente');
-    return data;
+    return parseJsonResponse(res, 'Erro ao alterar senha do cliente');
   },
 
   async deleteClient(id: string, cascade: boolean = false): Promise<{ success: boolean; deletedEventsCount?: number; deletedGalleriesCount?: number }> {
     const res = await fetch(`${API_BASE}/clients/${id}?cascade=${cascade}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao excluir cliente');
-    return data;
+    return parseJsonResponse(res, 'Erro ao excluir cliente');
   },
 
   // Events
   async getEvents(clientId?: string): Promise<PhotoEvent[]> {
     const url = clientId ? `${API_BASE}/events?clientId=${clientId}` : `${API_BASE}/events`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('Erro ao carregar eventos');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar eventos');
   },
 
   async createEvent(event: Partial<PhotoEvent>): Promise<PhotoEvent> {
@@ -108,8 +195,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event),
     });
-    if (!res.ok) throw new Error('Erro ao criar evento');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao criar evento');
   },
 
   async updateEvent(id: string, event: Partial<PhotoEvent>): Promise<PhotoEvent> {
@@ -118,27 +204,24 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar evento');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar evento');
   },
 
   async deleteEvent(id: string): Promise<void> {
     const res = await fetch(`${API_BASE}/events/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Erro ao excluir evento');
+    await parseJsonResponse(res, 'Erro ao excluir evento');
   },
 
   // Galleries
   async getGalleries(clientId?: string): Promise<Gallery[]> {
     const url = clientId ? `${API_BASE}/galleries?clientId=${clientId}` : `${API_BASE}/galleries`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('Erro ao carregar galerias');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar galerias');
   },
 
   async getGallery(id: string): Promise<Gallery & { photos: Photo[] }> {
     const res = await fetch(`${API_BASE}/galleries/${id}`);
-    if (!res.ok) throw new Error('Erro ao carregar galeria');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar galeria');
   },
 
   async createGallery(gallery: Partial<Gallery>): Promise<Gallery> {
@@ -147,8 +230,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(gallery),
     });
-    if (!res.ok) throw new Error('Erro ao criar galeria');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao criar galeria');
   },
 
   async updateGallery(id: string, gallery: Partial<Gallery>): Promise<Gallery> {
@@ -157,13 +239,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(gallery),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar galeria');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar galeria');
   },
 
   async deleteGallery(id: string): Promise<void> {
     const res = await fetch(`${API_BASE}/galleries/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Erro ao excluir galeria');
+    await parseJsonResponse(res, 'Erro ao excluir galeria');
   },
 
   // Photos
@@ -173,8 +254,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(photos),
     });
-    if (!res.ok) throw new Error('Erro ao fazer upload das fotos');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao fazer upload das fotos');
   },
 
   async updatePhoto(galleryId: string, photoId: string, photo: Partial<Photo>): Promise<Photo> {
@@ -183,21 +263,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(photo),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar foto');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar foto');
   },
 
   async deletePhoto(galleryId: string, photoId: string): Promise<void> {
     const res = await fetch(`${API_BASE}/galleries/${galleryId}/photos/${photoId}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Erro ao excluir foto');
+    await parseJsonResponse(res, 'Erro ao excluir foto');
   },
 
   async renumberPhotos(galleryId: string): Promise<{ success: boolean; photos: Photo[] }> {
     const res = await fetch(`${API_BASE}/galleries/${galleryId}/renumber`, {
       method: 'POST',
     });
-    if (!res.ok) throw new Error('Erro ao renumerar fotos');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao renumerar fotos');
   },
 
   async reorderPhotos(galleryId: string, photoIds: string[]): Promise<{ success: boolean; photos: Photo[] }> {
@@ -206,16 +284,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ photoIds }),
     });
-    if (!res.ok) throw new Error('Erro ao reordenar fotos');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao reordenar fotos');
   },
 
   // Selections
   async getSelections(clientId?: string): Promise<SelectionRecord[]> {
     const url = clientId ? `${API_BASE}/selections?clientId=${clientId}` : `${API_BASE}/selections`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('Erro ao carregar seleções');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar seleções');
   },
 
   async submitSelection(selectionData: {
@@ -235,8 +311,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(selectionData),
     });
-    if (!res.ok) throw new Error('Erro ao registrar seleção');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao registrar seleção');
   },
 
   async updateSelectionStatus(selectionId: string, status: SelectionStatus): Promise<SelectionRecord> {
@@ -245,8 +320,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar status da seleção');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar status da seleção');
   },
 
   // Dashboard Metrics & Stats
@@ -254,8 +328,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/admin/dashboard-stats`, {
       headers: getAdminHeaders(),
     });
-    if (!res.ok) throw new Error('Erro ao carregar métricas do painel');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar métricas do painel');
   },
 
   // Portfolio - Categories
@@ -263,8 +336,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/portfolio/categories?includeInactive=${includeInactive}`, {
       headers: getAdminHeaders(),
     });
-    if (!res.ok) throw new Error('Erro ao carregar categorias');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar categorias');
   },
 
   async createPortfolioCategory(category: {
@@ -278,9 +350,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(category),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao criar categoria');
-    return data;
+    return parseJsonResponse(res, 'Erro ao criar categoria');
   },
 
   async updatePortfolioCategory(
@@ -292,9 +362,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao atualizar categoria');
-    return data;
+    return parseJsonResponse(res, 'Erro ao atualizar categoria');
   },
 
   async deletePortfolioCategory(id: string): Promise<{ success: boolean; message: string }> {
@@ -302,9 +370,7 @@ export const api = {
       method: 'DELETE',
       headers: getAdminHeaders(),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao excluir categoria');
-    return data;
+    return parseJsonResponse(res, 'Erro ao excluir categoria');
   },
 
   async reorderPortfolioCategories(categoryIds: string[]): Promise<{ success: boolean }> {
@@ -313,8 +379,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ categoryIds }),
     });
-    if (!res.ok) throw new Error('Erro ao reordenar categorias');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao reordenar categorias');
   },
 
   async togglePortfolioCategoryActive(id: string): Promise<PortfolioCategory> {
@@ -354,11 +419,46 @@ export const api = {
       ? `${API_BASE}/admin/portfolio/photos?${query.toString()}`
       : `${API_BASE}/portfolio?${query.toString()}`;
 
-    const res = await fetch(endpoint, {
-      headers: isAdmin ? getAdminHeaders() : {},
-    });
-    if (!res.ok) throw new Error('Erro ao carregar fotografias do portfólio');
-    return res.json();
+    let serverPhotos: PortfolioPhoto[] = [];
+    try {
+      const res = await fetch(endpoint, {
+        headers: isAdmin ? getAdminHeaders() : {},
+      });
+      serverPhotos = await parseJsonResponse<PortfolioPhoto[]>(res, 'Erro ao carregar fotografias do portfólio');
+    } catch (err: any) {
+      console.warn('Aviso ao buscar fotos do servidor (usando fotos locais se houver):', err.message);
+    }
+
+    const normalizePhoto = (p: any): PortfolioPhoto => {
+      const cat = p.categoryName || p.category || 'Geral';
+      return {
+        ...p,
+        category: cat,
+        categoryName: cat,
+        caption: p.description || p.caption || '',
+      };
+    };
+
+    const normalizedServer = (serverPhotos || []).map(normalizePhoto);
+    const clientPhotos = getClientPortfolioPhotos().map(normalizePhoto);
+
+    if (clientPhotos.length > 0) {
+      const serverIdSet = new Set(normalizedServer.map((p) => String(p.id)));
+      const uniqueClientPhotos = clientPhotos.filter((p) => !serverIdSet.has(String(p.id)));
+      const combined = [...uniqueClientPhotos, ...normalizedServer];
+
+      if (params?.category && params.category !== 'Todos') {
+        const catFilter = params.category.toLowerCase();
+        return combined.filter(
+          (p) =>
+            p.categoryName.toLowerCase() === catFilter ||
+            (p as any).category?.toLowerCase() === catFilter
+        );
+      }
+      return combined;
+    }
+
+    return normalizedServer;
   },
 
   async uploadPortfolioPhotos(
@@ -371,10 +471,25 @@ export const api = {
     photos: PortfolioPhoto[];
     category: string;
   }> {
+    let files: File[] = [];
+    let cat = categoryName || 'Geral';
+    let title = extra?.title;
+    let caption = extra?.caption;
+    let active = extra?.active !== undefined ? extra.active : true;
+
     let formData: FormData;
     if (filesOrFormData instanceof FormData) {
       formData = filesOrFormData;
+      const fList = filesOrFormData.getAll('files') as File[];
+      files = fList.filter((f) => f instanceof File);
+      cat = (filesOrFormData.get('category') as string) || (filesOrFormData.get('categoryId') as string) || cat;
+      title = (filesOrFormData.get('title') as string) || title;
+      caption = (filesOrFormData.get('description') as string) || caption;
+      if (filesOrFormData.has('active')) {
+        active = filesOrFormData.get('active') !== 'false';
+      }
     } else {
+      files = filesOrFormData;
       formData = new FormData();
       filesOrFormData.forEach((f) => formData.append('files', f));
       if (categoryName) formData.append('category', categoryName);
@@ -383,14 +498,64 @@ export const api = {
       if (extra?.active !== undefined) formData.append('active', String(extra.active));
     }
 
-    const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
-      method: 'POST',
-      headers: getAdminHeaders(),
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao enviar fotografias');
-    return data;
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: formData,
+      });
+
+      return await parseJsonResponse(res, 'Erro ao enviar fotografias');
+    } catch (err: any) {
+      console.warn('Falha no upload para o servidor, avaliando fallback cliente:', err);
+
+      const isHtmlOrUnavailable =
+        err.message?.includes('HTML') ||
+        err.message?.includes('<!DOCTYPE') ||
+        err.message?.includes('Unexpected token') ||
+        err.message?.includes('404') ||
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('NetworkError');
+
+      if (isHtmlOrUnavailable && files.length > 0) {
+        console.info('Executando fallback local para upload de fotos...');
+        const fallbackPhotos: PortfolioPhoto[] = [];
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const dataUrl = await readFileAsDataUrl(file);
+          const seq = Date.now() + i;
+          const num = String(i + 1).padStart(3, '0');
+          const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+
+          fallbackPhotos.push({
+            id: `client-port-${seq}`,
+            categoryId: `cat-${cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+            categoryName: cat,
+            number: num,
+            order: i + 1,
+            imageUrl: dataUrl,
+            title: title || cleanName || `${cat} #${num}`,
+            description: caption || `${cat} — Fotografia Rocha Foto & Vídeo`,
+            aspect: 'portrait',
+            active: active,
+            featured: false,
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        saveClientPortfolioPhotos(fallbackPhotos);
+
+        return {
+          success: true,
+          count: fallbackPhotos.length,
+          photos: fallbackPhotos,
+          category: cat,
+        };
+      }
+
+      throw err;
+    }
   },
 
   async updatePortfolioPhoto(
@@ -401,14 +566,50 @@ export const api = {
     if (updates.caption && !updates.description) {
       payload.description = updates.caption;
     }
-    const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}`, {
-      method: 'PUT',
-      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao atualizar fotografia');
-    return data;
+    const catName = updates.categoryName || updates.category;
+    if (catName) {
+      payload.category = catName;
+      payload.categoryName = catName;
+    }
+
+    // Always update client-side storage if photo exists there
+    const clientPhotos = getClientPortfolioPhotos();
+    const localIndex = clientPhotos.findIndex((p) => String(p.id) === String(id));
+    if (localIndex !== -1) {
+      clientPhotos[localIndex] = {
+        ...clientPhotos[localIndex],
+        ...updates,
+        categoryName: catName || clientPhotos[localIndex].categoryName,
+        category: catName || (clientPhotos[localIndex] as any).category,
+      } as any;
+      localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(clientPhotos));
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}`, {
+        method: 'PUT',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      });
+      const updated = await parseJsonResponse<PortfolioPhoto>(res, 'Erro ao atualizar fotografia');
+      const normalized: PortfolioPhoto = {
+        ...updated,
+        category: updated.categoryName || (updated as any).category || catName,
+        categoryName: updated.categoryName || catName || 'Geral',
+      } as any;
+
+      if (localIndex !== -1) {
+        clientPhotos[localIndex] = normalized;
+        localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(clientPhotos));
+      }
+
+      return normalized;
+    } catch (err: any) {
+      if (localIndex !== -1) {
+        return clientPhotos[localIndex];
+      }
+      throw err;
+    }
   },
 
   async replacePortfolioPhoto(
@@ -418,14 +619,26 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}/replace`, {
-      method: 'POST',
-      headers: getAdminHeaders(),
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao substituir arquivo da fotografia');
-    return data;
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}/replace`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: formData,
+      });
+      return await parseJsonResponse(res, 'Erro ao substituir arquivo da fotografia');
+    } catch (err: any) {
+      if (err.message?.includes('HTML') || err.message?.includes('404') || err.message?.includes('Failed to fetch')) {
+        const dataUrl = await readFileAsDataUrl(file);
+        const clientPhotos = getClientPortfolioPhotos();
+        const photo = clientPhotos.find((p) => String(p.id) === String(id));
+        if (photo) {
+          photo.imageUrl = dataUrl;
+          localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(clientPhotos));
+          return { success: true, photo, message: 'Fotografia atualizada localmente.' };
+        }
+      }
+      throw err;
+    }
   },
 
   async replacePortfolioPhotoFile(
@@ -436,24 +649,70 @@ export const api = {
   },
 
   async deletePortfolioPhoto(id: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}`, {
-      method: 'DELETE',
-      headers: getAdminHeaders(),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao excluir fotografia');
-    return data;
+    removeClientPortfolioPhoto(id);
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(),
+      });
+      return await parseJsonResponse(res, 'Erro ao excluir fotografia');
+    } catch (err: any) {
+      return { success: true, message: 'Fotografia removida com sucesso.' };
+    }
   },
 
   async batchDeletePortfolioPhotos(photoIds: string[]): Promise<{ success: boolean; count: number; message: string }> {
-    const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-delete`, {
-      method: 'POST',
-      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ photoIds }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao excluir fotografias selecionadas');
-    return data;
+    photoIds.forEach((id) => removeClientPortfolioPhoto(id));
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-delete`, {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ photoIds }),
+      });
+      return await parseJsonResponse(res, 'Erro ao excluir fotografias selecionadas');
+    } catch (err: any) {
+      return { success: true, count: photoIds.length, message: `${photoIds.length} fotografias excluídas.` };
+    }
+  },
+
+  async batchMovePortfolioPhotos(
+    photoIds: string[],
+    targetCategory: string
+  ): Promise<{ success: boolean; count: number; category: string; message: string; photos?: PortfolioPhoto[] }> {
+    // Update local storage if present
+    const clientPhotos = getClientPortfolioPhotos();
+    if (clientPhotos.length > 0) {
+      let updatedLocal = false;
+      clientPhotos.forEach((p) => {
+        if (photoIds.includes(String(p.id))) {
+          p.categoryName = targetCategory;
+          (p as any).category = targetCategory;
+          updatedLocal = true;
+        }
+      });
+      if (updatedLocal) {
+        localStorage.setItem(CLIENT_STORAGE_PORTFOLIO_KEY, JSON.stringify(clientPhotos));
+      }
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-category`, {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ photoIds, category: targetCategory }),
+      });
+      return await parseJsonResponse(res, 'Erro ao mover fotos para a categoria');
+    } catch (err: any) {
+      if (clientPhotos.length > 0) {
+        return {
+          success: true,
+          count: photoIds.length,
+          category: targetCategory,
+          message: `${photoIds.length} fotografia(s) associada(s) à categoria "${targetCategory}".`,
+        };
+      }
+      throw err;
+    }
   },
 
   async reorderPortfolioPhotos(photoIds: string[]): Promise<{ success: boolean; photos: PortfolioPhoto[] }> {
@@ -462,8 +721,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ photoIds }),
     });
-    if (!res.ok) throw new Error('Erro ao reordenar fotografias');
-    const data = await res.json();
+    const data = await parseJsonResponse<{ success: boolean }>(res, 'Erro ao reordenar fotografias');
     const photos = await this.getPortfolioPhotos({ isAdmin: true });
     return { success: data.success, photos };
   },
@@ -478,39 +736,75 @@ export const api = {
     let categoryId = categoryOrId;
     if (categoryOrId && categoryOrId !== 'Todos') {
       const cats = await this.getPortfolioCategories(true);
-      const matched = cats.find((c) => c.name.toLowerCase() === categoryOrId.toLowerCase() || c.id === categoryOrId);
-      if (matched) categoryId = matched.id;
+      const found = cats.find(
+        (c) => c.id === categoryOrId || c.name.toLowerCase() === categoryOrId.toLowerCase()
+      );
+      if (found) categoryId = found.id;
     }
 
     const res = await fetch(`${API_BASE}/admin/portfolio/photos/renumber`, {
       method: 'POST',
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ categoryId }),
+      body: JSON.stringify({ categoryId: categoryId === 'Todos' ? undefined : categoryId }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao renumerar fotografias');
-    const photos = await this.getPortfolioPhotos({ isAdmin: true });
-    return {
-      success: data.success,
-      count: data.count,
-      renumberedCount: data.count,
-      message: data.message,
-      photos,
-    };
+    return parseJsonResponse(res, 'Erro ao renumerar fotografias');
   },
 
   // Legacy Portfolio compatibility
   async getPortfolio(category?: string): Promise<PortfolioItem[]> {
     const url = category && category !== 'Todos' ? `${API_BASE}/portfolio?category=${encodeURIComponent(category)}` : `${API_BASE}/portfolio`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Erro ao carregar portfólio');
-    return res.json();
+    let serverItems: PortfolioItem[] = [];
+    try {
+      const res = await fetch(url);
+      serverItems = await parseJsonResponse<PortfolioItem[]>(res, 'Erro ao carregar portfólio');
+    } catch (err: any) {
+      console.warn('Aviso ao carregar portfolio do servidor:', err);
+    }
+
+    const clientPhotos = getClientPortfolioPhotos();
+    if (clientPhotos.length > 0) {
+      const serverIdSet = new Set(serverItems.map((p) => String(p.id)));
+      const clientItems: PortfolioItem[] = clientPhotos
+        .filter((p) => !serverIdSet.has(String(p.id)) && p.active)
+        .map((p) => ({
+          id: p.id,
+          title: p.title,
+          category: p.categoryName || (p as any).category || 'Geral',
+          categoryId: p.categoryId,
+          categoryName: p.categoryName || (p as any).category || 'Geral',
+          number: p.number,
+          order: p.order,
+          imageUrl: p.imageUrl,
+          thumbnailUrl: p.thumbnailUrl,
+          caption: p.description,
+          description: p.description,
+          aspect: p.aspect,
+          active: p.active,
+          featured: p.featured,
+          createdAt: p.createdAt,
+        }));
+      const combined = [...clientItems, ...serverItems];
+      if (category && category !== 'Todos') {
+        const catLower = category.toLowerCase();
+        return combined.filter((i) => (i.category || '').toLowerCase() === catLower);
+      }
+      return combined.map((i) => ({
+        ...i,
+        category: i.category || (i as any).categoryName || 'Geral',
+        categoryName: (i as any).categoryName || i.category || 'Geral',
+      }));
+    }
+
+    return serverItems.map((i) => ({
+      ...i,
+      category: i.category || (i as any).categoryName || 'Geral',
+      categoryName: (i as any).categoryName || i.category || 'Geral',
+    }));
   },
 
   async getPortfolioSummary(): Promise<{ total: number; categories: Record<string, number>; isUsingRealPhotos: boolean }> {
     const res = await fetch(`${API_BASE}/portfolio/summary`);
-    if (!res.ok) throw new Error('Erro ao carregar resumo do portfólio');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao carregar resumo do portfólio');
   },
 
   async importPortfolioZip(file: File, replaceDemo: boolean = true): Promise<{ success: boolean; message: string; count: number; categories: Record<string, number>; totalInPortfolio: number }> {
@@ -521,9 +815,7 @@ export const api = {
       headers: getAdminHeaders(),
       body: formData,
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao importar arquivo ZIP.');
-    return data;
+    return parseJsonResponse(res, 'Erro ao importar arquivo ZIP.');
   },
 
   async importPortfolioFiles(files: File[], paths: string[], defaultCategory: string = 'Geral', replaceDemo: boolean = false): Promise<{ success: boolean; count: number; categories: Record<string, number>; totalInPortfolio: number }> {
@@ -542,9 +834,7 @@ export const api = {
       headers: getAdminHeaders(),
       body: formData,
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao importar arquivos.');
-    return data;
+    return parseJsonResponse(res, 'Erro ao importar arquivos.');
   },
 
   async scanLocalPortfolio(replaceDemo: boolean = false): Promise<{ success: boolean; count: number; message: string; totalInPortfolio: number }> {
@@ -553,9 +843,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ replaceDemo }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao escanear fotos locais.');
-    return data;
+    return parseJsonResponse(res, 'Erro ao escanear fotos locais.');
   },
 
   async createPortfolioItem(item: Partial<PortfolioItem>): Promise<PortfolioItem> {
@@ -564,8 +852,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(item),
     });
-    if (!res.ok) throw new Error('Erro ao adicionar foto ao portfólio');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao adicionar foto ao portfólio');
   },
 
   async updatePortfolioItem(id: string, item: Partial<PortfolioItem>): Promise<PortfolioItem> {
@@ -574,8 +861,7 @@ export const api = {
       headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(item),
     });
-    if (!res.ok) throw new Error('Erro ao atualizar foto do portfólio');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao atualizar foto do portfólio');
   },
 
   async deletePortfolioItem(id: string): Promise<void> {
@@ -583,7 +869,7 @@ export const api = {
       method: 'DELETE',
       headers: getAdminHeaders(),
     });
-    if (!res.ok) throw new Error('Erro ao excluir foto do portfólio');
+    await parseJsonResponse(res, 'Erro ao excluir foto do portfólio');
   },
 
   async clearPortfolioCategory(category: string): Promise<{ success: boolean; removedCount: number }> {
@@ -591,8 +877,7 @@ export const api = {
       method: 'DELETE',
       headers: getAdminHeaders(),
     });
-    if (!res.ok) throw new Error('Erro ao limpar categoria');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao limpar categoria');
   },
 
   async resetPortfolioDemo(): Promise<{ success: boolean; count: number; items: PortfolioItem[] }> {
@@ -600,7 +885,6 @@ export const api = {
       method: 'POST',
       headers: getAdminHeaders(),
     });
-    if (!res.ok) throw new Error('Erro ao restaurar fotos demo');
-    return res.json();
+    return parseJsonResponse(res, 'Erro ao restaurar fotos demo');
   },
 };

@@ -55,7 +55,10 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
   const categoryCounts = React.useMemo(() => {
     const counts: Record<string, number> = { Todos: items.length };
     items.forEach((item) => {
-      counts[item.category] = (counts[item.category] || 0) + 1;
+      const cat = item.category || (item as any).categoryName;
+      if (cat) {
+        counts[cat] = (counts[cat] || 0) + 1;
+      }
     });
     return counts;
   }, [items]);
@@ -71,8 +74,9 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
     });
     // Add any category that has items but might not be in categories table
     items.forEach((i) => {
-      if (i.category && !catNames.includes(i.category)) {
-        catNames.push(i.category);
+      const cat = i.category || (i as any).categoryName;
+      if (cat && !catNames.includes(cat)) {
+        catNames.push(cat);
       }
     });
     return catNames;
@@ -80,15 +84,19 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
 
   const filteredItems = React.useMemo(() => {
     return items.filter((item) => {
-      const matchesCategory = selectedCategory === 'Todos' || item.category === selectedCategory;
+      const itemCat = (item.category || (item as any).categoryName || '').trim();
+      const matchesCategory =
+        selectedCategory === 'Todos' ||
+        itemCat.toLowerCase() === selectedCategory.toLowerCase();
       if (!matchesCategory) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       return (
         item.title.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
+        itemCat.toLowerCase().includes(q) ||
         (item.number && item.number.toLowerCase().includes(q)) ||
-        (item.caption && item.caption.toLowerCase().includes(q))
+        (item.caption && item.caption.toLowerCase().includes(q)) ||
+        (item.description && item.description.toLowerCase().includes(q))
       );
     });
   }, [items, selectedCategory, searchQuery]);

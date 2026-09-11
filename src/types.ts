@@ -132,6 +132,8 @@ export interface PortfolioPhoto {
   id: string;
   categoryId: string;
   categoryName: string;
+  category?: string; // Compatibility alias with categoryName
+  caption?: string; // Compatibility alias with description
   number: string; // Ex: '001', '002', '025' - sequential visual numbering
   order: number;
   imageUrl: string;

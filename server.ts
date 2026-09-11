@@ -31,12 +31,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
-const DATA_DIR = path.join(__dirname, 'data');
+const IS_VERCEL = !!process.env.VERCEL;
+const DATA_DIR = IS_VERCEL ? '/tmp' : path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'rocha_db.json');
-const PORTFOLIO_DIR = path.join(__dirname, 'public', 'portfolio');
+const PORTFOLIO_DIR = IS_VERCEL
+  ? path.join('/tmp', 'portfolio')
+  : path.join(__dirname, 'public', 'portfolio');
 
-if (!fs.existsSync(PORTFOLIO_DIR)) {
-  fs.mkdirSync(PORTFOLIO_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(PORTFOLIO_DIR)) {
+    fs.mkdirSync(PORTFOLIO_DIR, { recursive: true });
+  }
+} catch (dirErr: any) {
+  console.warn('Directory creation skipped (read-only filesystem):', dirErr?.message || dirErr);
 }
 
 // Multer memory storage with 500MB limit for high-res photo packages
@@ -194,12 +204,13 @@ function saveDatabase() {
 
 loadDatabase();
 
-async function startServer() {
-  const app = express();
+const app = express();
 
-  // Express parser with generous limit for photo data / base64
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Express parser with generous limit for photo data / base64
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ extended: true, limit: '200mb' }));
+
+async function setupRoutes() {
 
   // Helper auth simulation: client password matches client email or default demo passwords
   // Admin credentials: admin@rochafotoevideo.com.br / admin123
@@ -1182,17 +1193,31 @@ async function startServer() {
       return (a.order || 0) - (b.order || 0);
     });
 
-    res.json(photos);
+    const normalized = photos.map((p) => ({
+      ...p,
+      category: p.categoryName,
+      categoryName: p.categoryName,
+      caption: p.description || '',
+    }));
+
+    res.json(normalized);
   });
 
   // Admin Get All Portfolio Photos (Admin Only - with filters & search)
   app.get('/api/admin/portfolio/photos', requireAdmin, (req: Request, res: Response) => {
-    const { categoryId, status, search } = req.query;
+    const { categoryId, category, status, search } = req.query;
 
     let photos = [...db.portfolioPhotos];
 
-    if (categoryId && categoryId !== 'Todos') {
-      photos = photos.filter((p) => p.categoryId === categoryId);
+    const targetCat = (categoryId || category) as string;
+    if (targetCat && targetCat !== 'Todos') {
+      const targetLower = targetCat.toLowerCase();
+      photos = photos.filter(
+        (p) =>
+          p.categoryId === targetCat ||
+          p.categoryName.toLowerCase() === targetLower ||
+          toSlug(p.categoryName) === toSlug(targetCat)
+      );
     }
 
     if (status === 'active') {
@@ -1223,7 +1248,14 @@ async function startServer() {
       return (a.order || 0) - (b.order || 0);
     });
 
-    res.json(photos);
+    const normalized = photos.map((p) => ({
+      ...p,
+      category: p.categoryName,
+      categoryName: p.categoryName,
+      caption: p.description || '',
+    }));
+
+    res.json(normalized);
   });
 
   // Multi-Photo Upload to Portfolio (Admin Only)
@@ -1287,15 +1319,27 @@ async function startServer() {
       files.forEach((file, idx) => {
         const rawFileName = path.basename(file.originalname);
         const safeFileName = `${Date.now()}_${idx}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-        const targetFilePath = path.join(targetDir, safeFileName);
+        let imageUrl = '';
 
-        // Write original image bytes with zero compression/filters
-        fs.writeFileSync(targetFilePath, file.buffer);
+        try {
+          if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+          }
+          const targetFilePath = path.join(targetDir, safeFileName);
+          fs.writeFileSync(targetFilePath, file.buffer);
+          imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+        } catch (diskErr: any) {
+          console.warn('Physical disk write skipped (read-only filesystem, e.g. Vercel):', diskErr.message);
+        }
+
+        if (!imageUrl) {
+          const mimeType = file.mimetype || 'image/jpeg';
+          imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+        }
 
         const currentSeq = highestNum + idx + 1;
         const formattedNumber = formatPhotoNumber(currentSeq);
         const itemTitle = cleanTitle(rawFileName) || `${category.name} ${formattedNumber}`;
-        const imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
 
         const newPhoto: PortfolioPhoto = {
           id: `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1331,22 +1375,42 @@ async function startServer() {
   // Update Portfolio Photo (Admin Only) - can change category, description, order, status, number
   app.put('/api/admin/portfolio/photos/:id', requireAdmin, (req: Request, res: Response) => {
     const { id } = req.params;
-    const photoIndex = db.portfolioPhotos.findIndex((p) => p.id === id);
+    const photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
     if (photoIndex === -1) {
       return res.status(404).json({ error: 'Fotografia não encontrada.' });
     }
 
     const currentPhoto = db.portfolioPhotos[photoIndex];
-    const { categoryId, title, description, order, active, featured, number } = req.body;
+    const { categoryId, category, categoryName, title, description, order, active, featured, number } = req.body;
 
     let targetCatId = currentPhoto.categoryId;
     let targetCatName = currentPhoto.categoryName;
 
-    if (categoryId && categoryId !== currentPhoto.categoryId) {
-      const cat = db.portfolioCategories.find((c) => c.id === categoryId);
+    const requestedCategory = categoryId || category || categoryName;
+    if (requestedCategory && (requestedCategory !== currentPhoto.categoryId || requestedCategory !== currentPhoto.categoryName)) {
+      const cat = db.portfolioCategories.find(
+        (c) =>
+          c.id === requestedCategory ||
+          c.name.toLowerCase() === String(requestedCategory).toLowerCase() ||
+          toSlug(c.name) === toSlug(String(requestedCategory))
+      );
       if (cat) {
         targetCatId = cat.id;
         targetCatName = cat.name;
+      } else if (String(requestedCategory).trim()) {
+        const catName = String(requestedCategory).trim();
+        const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+        const newCat: PortfolioCategory = {
+          id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+          name: catName,
+          slug: toSlug(catName),
+          order: maxOrder + 1,
+          active: true,
+          createdAt: new Date().toISOString(),
+        };
+        db.portfolioCategories.push(newCat);
+        targetCatId = newCat.id;
+        targetCatName = newCat.name;
       }
     }
 
@@ -1356,7 +1420,7 @@ async function startServer() {
       categoryName: targetCatName,
       title: title !== undefined ? title.trim() : currentPhoto.title,
       description: description !== undefined ? description.trim() : currentPhoto.description,
-      number: number !== undefined && number.trim() ? number.trim() : currentPhoto.number,
+      number: number !== undefined && String(number).trim() ? String(number).trim() : currentPhoto.number,
       order: typeof order === 'number' ? order : currentPhoto.order,
       active: active !== undefined ? Boolean(active) : currentPhoto.active,
       featured: featured !== undefined ? Boolean(featured) : currentPhoto.featured,
@@ -1365,7 +1429,14 @@ async function startServer() {
     syncPortfolioLegacy();
     saveDatabase();
 
-    res.json(db.portfolioPhotos[photoIndex]);
+    const normalized = {
+      ...db.portfolioPhotos[photoIndex],
+      category: targetCatName,
+      categoryName: targetCatName,
+      caption: db.portfolioPhotos[photoIndex].description || '',
+    };
+
+    res.json(normalized);
   });
 
   // Replace Single Photo File (Admin Only) - Preserves ID, category, sequential number, order
@@ -1407,10 +1478,24 @@ async function startServer() {
 
       const rawFileName = path.basename(req.file.originalname);
       const safeFileName = `${Date.now()}_replaced_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-      const targetFilePath = path.join(targetDir, safeFileName);
-      fs.writeFileSync(targetFilePath, req.file.buffer);
+      let newImageUrl = '';
 
-      const newImageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+      try {
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+        const targetFilePath = path.join(targetDir, safeFileName);
+        fs.writeFileSync(targetFilePath, req.file.buffer);
+        newImageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+      } catch (diskErr: any) {
+        console.warn('Physical disk write skipped during replace:', diskErr.message);
+      }
+
+      if (!newImageUrl) {
+        const mimeType = req.file.mimetype || 'image/jpeg';
+        newImageUrl = `data:${mimeType};base64,${req.file.buffer.toString('base64')}`;
+      }
+
       photo.imageUrl = newImageUrl;
 
       syncPortfolioLegacy();
@@ -1496,6 +1581,85 @@ async function startServer() {
       success: true,
       count: deletedCount,
       message: `${deletedCount} fotografia(s) excluída(s) com sucesso.`,
+    });
+  });
+
+  // Batch Move / Set Category for Portfolio Photos (Admin Only)
+  app.post('/api/admin/portfolio/photos/batch-category', requireAdmin, (req: Request, res: Response) => {
+    const { photoIds, category, categoryId } = req.body;
+    if (!Array.isArray(photoIds) || photoIds.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma fotografia selecionada.' });
+    }
+
+    const categoryIdentifier = categoryId || category;
+    if (!categoryIdentifier || !String(categoryIdentifier).trim()) {
+      return res.status(400).json({ error: 'Selecione uma categoria de destino válida.' });
+    }
+
+    // Find category by ID or name
+    let targetCategory = db.portfolioCategories.find(
+      (c) =>
+        c.id === categoryIdentifier ||
+        c.name.toLowerCase() === String(categoryIdentifier).toLowerCase() ||
+        toSlug(c.name) === toSlug(String(categoryIdentifier))
+    );
+
+    // Auto-create category if missing
+    if (!targetCategory) {
+      const catName = String(categoryIdentifier).trim();
+      const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+      targetCategory = {
+        id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+        name: catName,
+        slug: toSlug(catName),
+        order: maxOrder + 1,
+        active: true,
+        createdAt: new Date().toISOString(),
+      };
+      db.portfolioCategories.push(targetCategory);
+    }
+
+    const idSet = new Set(photoIds.map((id) => String(id)));
+    let updatedCount = 0;
+    const updatedPhotos: PortfolioPhoto[] = [];
+
+    // Calculate next order in target category
+    const photosInTarget = db.portfolioPhotos.filter((p) => p.categoryId === targetCategory!.id);
+    let highestOrder = photosInTarget.reduce((max, p) => Math.max(max, p.order || 0), 0);
+
+    db.portfolioPhotos.forEach((photo) => {
+      if (idSet.has(String(photo.id))) {
+        updatedCount++;
+        highestOrder++;
+
+        photo.categoryId = targetCategory!.id;
+        photo.categoryName = targetCategory!.name;
+        photo.order = highestOrder;
+
+        // If description has old category template, update it
+        if (!photo.description || photo.description.includes('— Fotografia original Rocha Foto & Vídeo')) {
+          photo.description = `${targetCategory!.name} — Fotografia original Rocha Foto & Vídeo`;
+        }
+
+        updatedPhotos.push({
+          ...photo,
+          category: targetCategory!.name,
+          categoryName: targetCategory!.name,
+          caption: photo.description || '',
+        });
+      }
+    });
+
+    syncPortfolioLegacy();
+    saveDatabase();
+
+    res.json({
+      success: true,
+      count: updatedCount,
+      category: targetCategory.name,
+      categoryId: targetCategory.id,
+      message: `${updatedCount} fotografia(s) associada(s) à categoria "${targetCategory.name}" com sucesso.`,
+      photos: updatedPhotos,
     });
   });
 
@@ -1643,14 +1807,27 @@ async function startServer() {
 
         const rawFileName = path.basename(file.originalname);
         const safeFileName = `${Date.now()}_${index}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-        const targetFilePath = path.join(targetDir, safeFileName);
+        let imageUrl = '';
 
-        fs.writeFileSync(targetFilePath, file.buffer);
+        try {
+          if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+          }
+          const targetFilePath = path.join(targetDir, safeFileName);
+          fs.writeFileSync(targetFilePath, file.buffer);
+          imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+        } catch (diskErr: any) {
+          console.warn('Physical disk write skipped in import-files:', diskErr.message);
+        }
+
+        if (!imageUrl) {
+          const mimeType = file.mimetype || 'image/jpeg';
+          imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+        }
 
         categoryStats[categoryName] = (categoryStats[categoryName] || 0) + 1;
         const seqNumber = formatPhotoNumber(categoryStats[categoryName]);
         const itemTitle = cleanTitle(rawFileName) || `${categoryName} ${seqNumber}`;
-        const imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
 
         const newPhoto: PortfolioPhoto = {
           id: `port-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1792,6 +1969,57 @@ async function startServer() {
     res.json({ success: true, count: db.portfolioPhotos.length });
   });
 
+  // Explicit API 404 handler - prevents ANY /api route from falling through to HTML index.html
+  app.all('/api/*', (req: Request, res: Response) => {
+    res.status(404).json({
+      error: `Endpoint da API não encontrado: ${req.method} ${req.originalUrl}`,
+      status: 404,
+    });
+  });
+
+  // Express global error handler - guarantees JSON is ALWAYS returned for errors, NEVER HTML
+  app.use((err: any, req: Request, res: Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    console.error('[SERVER ERROR]', err);
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          error: 'Arquivo muito grande. O limite máximo por foto é 500MB.',
+          code: err.code,
+        });
+      }
+      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).json({
+          error: `Campo de arquivo inesperado no upload: ${err.field || 'desconhecido'}. Envie fotos usando o campo correto.`,
+          code: err.code,
+        });
+      }
+      return res.status(400).json({
+        error: `Erro no upload: ${err.message}`,
+        code: err.code,
+      });
+    }
+
+    if (err.type === 'entity.too.large' || err.status === 413) {
+      return res.status(413).json({
+        error: 'O tamanho total dos dados enviados excedeu o limite do servidor.',
+        status: 413,
+      });
+    }
+
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      error: err.message || 'Erro interno no servidor ao processar a requisição.',
+      status: statusCode,
+    });
+  });
+}
+
+// Initialize all routes on app
+setupRoutes();
+
+async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1799,7 +2027,7 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!IS_VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req: Request, res: Response) => {
@@ -1807,9 +2035,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Rocha Foto & Vídeo server running on http://localhost:${PORT}`);
-  });
+  if (!IS_VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Rocha Foto & Vídeo server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!IS_VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app };
+

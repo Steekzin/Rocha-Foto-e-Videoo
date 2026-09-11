@@ -346,8 +346,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
 
     try {
-      const res = await api.uploadPhotos(selectedGalleryForPhotos.id, photosToUpload);
-      setCurrentGalleryPhotos([...currentGalleryPhotos, ...res.photos]);
+      const BATCH_SIZE = 5;
+      const allNewPhotos: Photo[] = [];
+      for (let i = 0; i < photosToUpload.length; i += BATCH_SIZE) {
+        const batch = photosToUpload.slice(i, i + BATCH_SIZE);
+        const res = await api.uploadPhotos(selectedGalleryForPhotos.id, batch);
+        if (res.photos) {
+          allNewPhotos.push(...res.photos);
+        }
+      }
+      setCurrentGalleryPhotos([...currentGalleryPhotos, ...allNewPhotos]);
       loadAllAdminData();
       alert(`${photosToUpload.length} fotografias enviadas com numeração automática gerada!`);
     } catch (err: any) {

@@ -25,6 +25,7 @@ import {
   Check,
   RotateCw,
   Hash,
+  FolderInput,
   Image as ImageIcon,
 } from 'lucide-react';
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
@@ -58,6 +59,7 @@ export const AdminPortfolioTab: React.FC = () => {
   const [photoToDelete, setPhotoToDelete] = useState<PortfolioPhoto | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+  const [batchTargetCategory, setBatchTargetCategory] = useState<string>('');
   const [renumberTargetCategory, setRenumberTargetCategory] = useState<string | null>(null);
   const [showResetSeedModal, setShowResetSeedModal] = useState(false);
 
@@ -255,23 +257,41 @@ export const AdminPortfolioTab: React.FC = () => {
     e.preventDefault();
     if (!editingPhoto) return;
 
+    const chosenCat = (editingPhoto.categoryName || editingPhoto.category || '').trim();
+    if (!chosenCat) {
+      setStatusMessage({ type: 'error', text: 'Selecione uma categoria válida para a fotografia.' });
+      return;
+    }
+
     try {
       setLoading(true);
+      const catObj = categories.find(
+        (c) => c.name.toLowerCase() === chosenCat.toLowerCase() || c.id === editingPhoto.categoryId
+      );
+      const categoryId = catObj ? catObj.id : editingPhoto.categoryId;
+
       const updated = await api.updatePortfolioPhoto(editingPhoto.id, {
-        title: editingPhoto.title,
-        category: editingPhoto.category,
-        caption: editingPhoto.caption,
-        number: editingPhoto.number,
-        active: editingPhoto.active,
-        featured: editingPhoto.featured,
-        order: editingPhoto.order,
+        title: editingPhoto.title.trim() || `Foto #${editingPhoto.number || ''}`,
+        categoryId: categoryId,
+        category: chosenCat,
+        categoryName: chosenCat,
+        caption: editingPhoto.caption || editingPhoto.description || '',
+        description: editingPhoto.caption || editingPhoto.description || '',
+        number: editingPhoto.number || '',
+        active: editingPhoto.active !== false,
+        featured: !!editingPhoto.featured,
+        order: typeof editingPhoto.order === 'number' ? editingPhoto.order : 0,
       });
 
-      setPhotos((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      setPhotos((prev) => prev.map((p) => (String(p.id) === String(updated.id) ? updated : p)));
       setEditingPhoto(null);
-      setStatusMessage({ type: 'success', text: `Fotografia #${updated.number || updated.title} atualizada com sucesso!` });
+      setStatusMessage({
+        type: 'success',
+        text: `Fotografia #${updated.number || updated.title} salva com sucesso na categoria "${updated.categoryName || updated.category}"!`,
+      });
       await loadAllData();
     } catch (err: any) {
+      console.error('Erro ao atualizar foto:', err);
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao salvar alterações da foto' });
     } finally {
       setLoading(false);
@@ -339,6 +359,39 @@ export const AdminPortfolioTab: React.FC = () => {
       await loadAllData();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao excluir fotos' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBatchMovePhotos = async (targetCategoryName?: string) => {
+    const chosen = (targetCategoryName || batchTargetCategory || '').trim();
+    if (selectedPhotoIds.length === 0) {
+      setStatusMessage({ type: 'error', text: 'Selecione pelo menos uma fotografia.' });
+      return;
+    }
+    if (!chosen) {
+      setStatusMessage({ type: 'error', text: 'Selecione a categoria de destino.' });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setStatusMessage({
+        type: 'info',
+        text: `Movendo ${selectedPhotoIds.length} foto(s) para a categoria "${chosen}"...`,
+      });
+      const res = await api.batchMovePortfolioPhotos(selectedPhotoIds, chosen);
+      setStatusMessage({
+        type: 'success',
+        text: res.message || `${selectedPhotoIds.length} fotografia(s) associada(s) à categoria "${chosen}".`,
+      });
+      setSelectedPhotoIds([]);
+      setBatchTargetCategory('');
+      await loadAllData();
+    } catch (err: any) {
+      console.error('Erro ao mover fotos em lote:', err);
+      setStatusMessage({ type: 'error', text: err.message || 'Erro ao mover fotos para a nova categoria' });
     } finally {
       setLoading(false);
     }
@@ -507,17 +560,38 @@ export const AdminPortfolioTab: React.FC = () => {
   // -------------------------------------------------------------
   const photoCountsByCategory = React.useMemo(() => {
     const map: Record<string, number> = {};
+    categories.forEach((c) => {
+      map[c.name] = 0;
+    });
     photos.forEach((p) => {
-      map[p.category] = (map[p.category] || 0) + 1;
+      const pCat = (p.categoryName || (p as any).category || '').trim().toLowerCase();
+      const matched = categories.find(
+        (c) => c.name.toLowerCase() === pCat || c.id === p.categoryId
+      );
+      if (matched) {
+        map[matched.name] = (map[matched.name] || 0) + 1;
+      } else if (pCat) {
+        const rawName = p.categoryName || (p as any).category || 'Geral';
+        map[rawName] = (map[rawName] || 0) + 1;
+      }
     });
     return map;
-  }, [photos]);
+  }, [photos, categories]);
 
   const filteredPhotos = React.useMemo(() => {
     return photos.filter((p) => {
+      const photoCat = (p.categoryName || (p as any).category || '').trim().toLowerCase();
       // Category filter
-      if (selectedCategoryFilter !== 'Todos' && p.category !== selectedCategoryFilter) {
-        return false;
+      if (selectedCategoryFilter !== 'Todos') {
+        const filterLower = selectedCategoryFilter.trim().toLowerCase();
+        const matchedCategoryObj = categories.find(
+          (c) => c.name.toLowerCase() === filterLower || c.id === selectedCategoryFilter
+        );
+        const matchesName = photoCat === filterLower;
+        const matchesId = matchedCategoryObj ? p.categoryId === matchedCategoryObj.id : false;
+        if (!matchesName && !matchesId) {
+          return false;
+        }
       }
       // Status filter
       if (selectedStatusFilter === 'active' && !p.active) return false;
@@ -528,11 +602,12 @@ export const AdminPortfolioTab: React.FC = () => {
       return (
         (p.number && p.number.toLowerCase().includes(q)) ||
         p.title.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q) ||
+        photoCat.includes(q) ||
+        (p.description && p.description.toLowerCase().includes(q)) ||
         (p.caption && p.caption.toLowerCase().includes(q))
       );
     });
-  }, [photos, selectedCategoryFilter, selectedStatusFilter, searchQuery]);
+  }, [photos, categories, selectedCategoryFilter, selectedStatusFilter, searchQuery]);
 
   const isRealPhotos = photos.some((p) => p.imageUrl.startsWith('/portfolio/'));
   const activePhotosCount = photos.filter((p) => p.active).length;
@@ -812,13 +887,39 @@ export const AdminPortfolioTab: React.FC = () => {
             </div>
 
             {selectedPhotoIds.length > 0 && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Batch Move to Category */}
+                <div className="flex items-center gap-1.5 bg-[#171b22] px-2.5 py-1 rounded-lg border border-[#2b313d]">
+                  <FolderInput className="w-3.5 h-3.5 text-[#c99e64]" />
+                  <span className="text-[11px] text-gray-300 font-medium">Mover para:</span>
+                  <select
+                    value={batchTargetCategory}
+                    onChange={(e) => setBatchTargetCategory(e.target.value)}
+                    className="bg-[#0c0e11] border border-[#262b35] rounded px-2 py-0.5 text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                  >
+                    <option value="">Selecione categoria...</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!batchTargetCategory || loading}
+                    onClick={() => handleBatchMovePhotos()}
+                    className="px-2.5 py-1 bg-[#c99e64] hover:bg-[#d8ae74] disabled:opacity-50 text-black font-bold text-xs rounded transition-colors cursor-pointer"
+                  >
+                    Mover
+                  </button>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => setSelectedPhotoIds([])}
                   className="px-2.5 py-1 text-xs text-gray-400 hover:text-white cursor-pointer"
                 >
-                  Limpar seleção
+                  Limpar
                 </button>
                 <button
                   type="button"
@@ -855,7 +956,11 @@ export const AdminPortfolioTab: React.FC = () => {
                 <div
                   key={photo.id}
                   className={`group relative bg-[#0e1014] rounded-xl overflow-hidden border transition-all flex flex-col ${
-                    photo.active ? 'border-[#20252e] hover:border-[#c99e64]/70' : 'border-zinc-800 opacity-70'
+                    selectedPhotoIds.includes(String(photo.id))
+                      ? 'border-[#c99e64] ring-2 ring-[#c99e64]/50 shadow-lg shadow-[#c99e64]/10'
+                      : photo.active
+                      ? 'border-[#20252e] hover:border-[#c99e64]/70'
+                      : 'border-zinc-800 opacity-70'
                   }`}
                 >
                   {/* Photo Container */}
@@ -946,7 +1051,7 @@ export const AdminPortfolioTab: React.FC = () => {
                     <div>
                       <div className="flex items-center justify-between gap-1 mb-0.5">
                         <span className="text-[10px] uppercase tracking-wider text-[#c99e64] font-semibold truncate">
-                          {photo.category}
+                          {photo.categoryName || photo.category || 'Geral'}
                         </span>
                       </div>
                       <p className="text-xs font-medium text-white truncate" title={photo.title}>
@@ -963,7 +1068,16 @@ export const AdminPortfolioTab: React.FC = () => {
                     <div className="mt-2.5 pt-2 border-t border-[#1d222b] grid grid-cols-3 gap-1">
                       <button
                         type="button"
-                        onClick={() => setEditingPhoto(photo)}
+                        onClick={() => {
+                          const cat = (photo.categoryName || photo.category || '').trim();
+                          setEditingPhoto({
+                            ...photo,
+                            category: cat,
+                            categoryName: cat,
+                            caption: photo.caption || photo.description || '',
+                            description: photo.description || photo.caption || '',
+                          });
+                        }}
                         title="Editar detalhes (legenda, categoria, número)"
                         className="py-1 px-1 bg-[#171b22] hover:bg-[#232934] text-[#c99e64] rounded text-[10px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer"
                       >
@@ -1462,20 +1576,54 @@ export const AdminPortfolioTab: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                    Categoria *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[#9ca3af] font-semibold uppercase">
+                      Categoria *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const custom = prompt('Digite o nome da nova categoria:');
+                        if (custom && custom.trim()) {
+                          const catTrimmed = custom.trim();
+                          setEditingPhoto({
+                            ...editingPhoto,
+                            category: catTrimmed,
+                            categoryName: catTrimmed,
+                          });
+                        }
+                      }}
+                      className="text-[10px] text-[#c99e64] hover:underline cursor-pointer"
+                    >
+                      + Nova categoria
+                    </button>
+                  </div>
                   <select
                     required
-                    value={editingPhoto.category}
-                    onChange={(e) => setEditingPhoto({ ...editingPhoto, category: e.target.value })}
-                    className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white"
+                    value={editingPhoto.categoryName || editingPhoto.category || ''}
+                    onChange={(e) => {
+                      const newCat = e.target.value;
+                      const catObj = categories.find((c) => c.name === newCat);
+                      setEditingPhoto({
+                        ...editingPhoto,
+                        category: newCat,
+                        categoryName: newCat,
+                        categoryId: catObj ? catObj.id : editingPhoto.categoryId,
+                      });
+                    }}
+                    className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:outline-none focus:border-[#c99e64]"
                   >
+                    <option value="">Selecione uma categoria...</option>
                     {categories.map((c) => (
                       <option key={c.id} value={c.name}>
-                        {c.name}
+                        {c.name} {!c.active ? '(Inativa)' : ''}
                       </option>
                     ))}
+                    {editingPhoto.categoryName && !categories.some((c) => c.name.toLowerCase() === editingPhoto.categoryName?.toLowerCase()) && (
+                      <option value={editingPhoto.categoryName}>
+                        {editingPhoto.categoryName} (Nova)
+                      </option>
+                    )}
                   </select>
                 </div>
               </div>
