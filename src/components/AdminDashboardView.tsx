@@ -139,21 +139,21 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     try {
       setLoading(true);
       const [cList, eList, gList, sList, stats] = await Promise.all([
-        api.getClients(),
-        api.getEvents(),
-        api.getGalleries(),
-        api.getSelections(),
+        api.getClients().catch(() => []),
+        api.getEvents().catch(() => []),
+        api.getGalleries().catch(() => []),
+        api.getSelections().catch(() => []),
         api.getDashboardStats().catch(() => null),
       ]);
-      setClients(cList);
-      setEvents(eList);
-      setGalleries(gList);
-      setSelections(sList);
+      setClients(cList || []);
+      setEvents(eList || []);
+      setGalleries(gList || []);
+      setSelections(sList || []);
       if (stats) {
         setDashboardStats(stats);
       }
 
-      if (gList.length > 0 && !selectedGalleryForPhotos) {
+      if (gList && gList.length > 0 && !selectedGalleryForPhotos) {
         selectGalleryForPhotoManagement(gList[0]);
       }
     } catch (err) {
