@@ -86,15 +86,20 @@ export const AdminPortfolioTab: React.FC = () => {
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load all categories and photos
+  // Load all categories and photos with fault-tolerant fallbacks
   const loadAllData = async () => {
     try {
       setLoading(true);
-      const [cats, photosList, legacy] = await Promise.all([
-        api.getPortfolioCategories(true), // include inactive categories for admin
+      const results = await Promise.allSettled([
+        api.getPortfolioCategories(true),
         api.getPortfolioPhotos({ activeOnly: false }),
         api.getPortfolio(),
       ]);
+
+      const cats = results[0].status === 'fulfilled' ? results[0].value : [];
+      const photosList = results[1].status === 'fulfilled' ? results[1].value : [];
+      const legacy = results[2].status === 'fulfilled' ? results[2].value : [];
+
       setCategories(cats);
       setPhotos(photosList);
       setLegacyItems(legacy);
@@ -102,9 +107,14 @@ export const AdminPortfolioTab: React.FC = () => {
       if (!uploadCategory && cats.length > 0) {
         setUploadCategory(cats[0].name);
       }
+
+      // Check if any failed and only show warning if both categories and photos failed
+      if (results[0].status === 'rejected' && results[1].status === 'rejected') {
+        const errReason = (results[0] as PromiseRejectedResult).reason;
+        setStatusMessage({ type: 'error', text: 'Erro ao carregar dados do portfólio: ' + (errReason?.message || errReason) });
+      }
     } catch (err: any) {
       console.error('Error loading portfolio admin data:', err);
-      setStatusMessage({ type: 'error', text: 'Erro ao carregar dados do portfólio: ' + (err.message || err) });
     } finally {
       setLoading(false);
     }

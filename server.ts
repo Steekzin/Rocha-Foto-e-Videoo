@@ -18,7 +18,7 @@ import {
   INITIAL_PORTFOLIO,
   INITIAL_PORTFOLIO_CATEGORIES,
   INITIAL_PORTFOLIO_PHOTOS,
-} from './server/seedData.js';
+} from './server/seedData.ts';
 import {
   Client,
   PhotoEvent,
@@ -29,7 +29,7 @@ import {
   PortfolioCategory,
   PortfolioPhoto,
   User,
-} from './src/types.js';
+} from './src/types.ts';
 import {
   isSupabaseConfigured,
   testSupabaseConnection,
@@ -54,18 +54,20 @@ import {
   syncPortfolioPhotosToSupabase,
   deletePortfolioPhotoFromSupabase,
   migrateLocalDatabaseToSupabase,
-} from './server/supabase.js';
+} from './server/supabase.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Safe directory resolution for ESM and CJS bundle
+const currentDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : process.cwd();
 
 const PORT = 3000;
 const IS_VERCEL = !!process.env.VERCEL;
-const DATA_DIR = IS_VERCEL ? '/tmp' : path.join(__dirname, 'data');
+const DATA_DIR = IS_VERCEL ? '/tmp' : path.join(currentDir, 'data');
 const DB_FILE = path.join(DATA_DIR, 'rocha_db.json');
 const PORTFOLIO_DIR = IS_VERCEL
   ? path.join('/tmp', 'portfolio')
-  : path.join(__dirname, 'public', 'portfolio');
+  : path.join(currentDir, 'public', 'portfolio');
 
 try {
   if (!fs.existsSync(DATA_DIR)) {
@@ -167,10 +169,18 @@ function loadDatabase() {
           updated = true;
         }
 
-        // Ensure portfolioPhotos exist
-        if (!db.portfolioPhotos || db.portfolioPhotos.length === 0) {
-          if (db.portfolio && db.portfolio.length > 0) {
-            db.portfolioPhotos = db.portfolio.map((item, idx) => {
+        // Ensure portfolioPhotos exist and include all items from portfolio legacy
+        if (!Array.isArray(db.portfolioPhotos)) {
+          db.portfolioPhotos = [];
+        }
+
+        if (db.portfolio && db.portfolio.length > 0) {
+          const existingPhotoIds = new Set(db.portfolioPhotos.map((p) => String(p.id)));
+          const existingImageUrls = new Set(db.portfolioPhotos.map((p) => String(p.imageUrl)));
+
+          let addedAny = false;
+          db.portfolio.forEach((item, idx) => {
+            if (!existingPhotoIds.has(String(item.id)) && !existingImageUrls.has(String(item.imageUrl))) {
               let cat = db.portfolioCategories.find(
                 (c) => c.name.toLowerCase() === item.category.toLowerCase()
               );
@@ -185,24 +195,34 @@ function loadDatabase() {
                 };
                 db.portfolioCategories.push(cat);
               }
-              return {
+
+              const photoNum = (item as any).number || formatPhotoNumber(db.portfolioPhotos.length + 1);
+              db.portfolioPhotos.push({
                 id: item.id || `port-${idx + 1}`,
                 categoryId: cat.id,
                 categoryName: cat.name,
-                number: item.number || formatPhotoNumber(idx + 1),
-                order: item.order || idx + 1,
+                number: photoNum,
+                order: (item as any).order || db.portfolioPhotos.length + 1,
                 imageUrl: item.imageUrl,
+                thumbnailUrl: item.thumbnailUrl || item.imageUrl,
                 title: item.title,
                 description: item.caption || item.description || '',
                 aspect: item.aspect || 'portrait',
                 active: item.active !== false,
                 featured: Boolean(item.featured),
                 createdAt: item.createdAt || new Date().toISOString(),
-              };
-            });
-          } else {
-            db.portfolioPhotos = [...INITIAL_PORTFOLIO_PHOTOS];
+              });
+              addedAny = true;
+            }
+          });
+
+          if (addedAny) {
+            updated = true;
           }
+        }
+
+        if (db.portfolioPhotos.length === 0) {
+          db.portfolioPhotos = [...INITIAL_PORTFOLIO_PHOTOS];
           updated = true;
         }
 
@@ -1125,27 +1145,40 @@ async function setupRoutes() {
 
   // Get Categories (Public: active only, Admin: all with includeInactive=true)
   app.get('/api/portfolio/categories', (req: Request, res: Response) => {
-    const includeInactive = req.query.includeInactive === 'true';
+    try {
+      const includeInactive = req.query.includeInactive === 'true';
 
-    let categories = includeInactive
-      ? [...db.portfolioCategories]
-      : db.portfolioCategories.filter((c) => c.active);
+      const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
+        ? db.portfolioCategories
+        : INITIAL_PORTFOLIO_CATEGORIES;
 
-    // Sort by order ascending
-    categories.sort((a, b) => a.order - b.order);
+      const photoList = Array.isArray(db.portfolioPhotos)
+        ? db.portfolioPhotos
+        : [];
 
-    // Attach real-time photoCount for each category
-    const categoriesWithCount = categories.map((cat) => {
-      const count = db.portfolioPhotos.filter(
-        (p) => p.categoryId === cat.id && (includeInactive || p.active)
-      ).length;
-      return {
-        ...cat,
-        photoCount: count,
-      };
-    });
+      let categories = includeInactive
+        ? [...catList]
+        : catList.filter((c) => c && c.active);
 
-    res.json(categoriesWithCount);
+      // Sort by order ascending
+      categories.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      // Attach real-time photoCount for each category
+      const categoriesWithCount = categories.map((cat) => {
+        const count = photoList.filter(
+          (p) => p && (String(p.categoryId) === String(cat.id) || (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())) && (includeInactive || p.active)
+        ).length;
+        return {
+          ...cat,
+          photoCount: count,
+        };
+      });
+
+      res.json(categoriesWithCount);
+    } catch (err: any) {
+      console.error('[Portfolio Categories Error]:', err);
+      res.json(INITIAL_PORTFOLIO_CATEGORIES);
+    }
   });
 
   // Create Category (Admin Only)
@@ -1313,102 +1346,136 @@ async function setupRoutes() {
 
   // Public & General Portfolio API (Only active photos from active categories)
   app.get('/api/portfolio', (req: Request, res: Response) => {
-    const { category, categoryId } = req.query;
+    try {
+      const { category, categoryId } = req.query;
 
-    // Get active category IDs
-    const activeCategoryIds = new Set(
-      db.portfolioCategories.filter((c) => c.active).map((c) => c.id)
-    );
+      const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
+        ? db.portfolioCategories
+        : INITIAL_PORTFOLIO_CATEGORIES;
 
-    let photos = db.portfolioPhotos.filter(
-      (p) => p.active && activeCategoryIds.has(p.categoryId)
-    );
+      const photoList = Array.isArray(db.portfolioPhotos) && db.portfolioPhotos.length > 0
+        ? db.portfolioPhotos
+        : INITIAL_PORTFOLIO_PHOTOS;
 
-    if (categoryId && categoryId !== 'Todos') {
-      photos = photos.filter((p) => p.categoryId === categoryId);
-    } else if (category && category !== 'Todos') {
-      const catLower = String(category).toLowerCase();
-      photos = photos.filter(
-        (p) =>
-          p.categoryName.toLowerCase() === catLower ||
-          toSlug(p.categoryName) === catLower
+      // Get active category IDs and names
+      const activeCategoryIds = new Set(
+        catList.filter((c) => c && c.active).map((c) => c.id)
       );
+      const activeCategoryNames = new Set(
+        catList.filter((c) => c && c.active).map((c) => (c.name || '').toLowerCase())
+      );
+
+      let photos = photoList.filter(
+        (p) => p && p.active && (activeCategoryIds.has(p.categoryId) || activeCategoryNames.has((p.categoryName || '').toLowerCase()))
+      );
+
+      if (categoryId && categoryId !== 'Todos') {
+        photos = photos.filter((p) => p && p.categoryId === categoryId);
+      } else if (category && category !== 'Todos') {
+        const catLower = String(category).toLowerCase();
+        photos = photos.filter(
+          (p) =>
+            p &&
+            ((p.categoryName && p.categoryName.toLowerCase() === catLower) ||
+              toSlug(p.categoryName || '') === catLower ||
+              ((p as any).category && String((p as any).category).toLowerCase() === catLower))
+        );
+      }
+
+      // Sort by category order, then photo order
+      const categoryOrderMap = new Map<string, number>();
+      catList.forEach((c) => categoryOrderMap.set(c.id, c.order || 999));
+
+      photos.sort((a, b) => {
+        const orderCatA = categoryOrderMap.get(a.categoryId) || 999;
+        const orderCatB = categoryOrderMap.get(b.categoryId) || 999;
+        if (orderCatA !== orderCatB) return orderCatA - orderCatB;
+        return (a.order || 0) - (b.order || 0);
+      });
+
+      const normalized = photos.map((p) => ({
+        ...p,
+        category: p.categoryName || (p as any).category || '',
+        categoryName: p.categoryName || (p as any).category || '',
+        caption: p.description || (p as any).caption || '',
+      }));
+
+      res.json(normalized);
+    } catch (err: any) {
+      console.error('[Portfolio Photos Public Error]:', err);
+      res.json(INITIAL_PORTFOLIO_PHOTOS);
     }
-
-    // Sort by category order, then photo order
-    const categoryOrderMap = new Map<string, number>();
-    db.portfolioCategories.forEach((c) => categoryOrderMap.set(c.id, c.order));
-
-    photos.sort((a, b) => {
-      const orderCatA = categoryOrderMap.get(a.categoryId) || 999;
-      const orderCatB = categoryOrderMap.get(b.categoryId) || 999;
-      if (orderCatA !== orderCatB) return orderCatA - orderCatB;
-      return (a.order || 0) - (b.order || 0);
-    });
-
-    const normalized = photos.map((p) => ({
-      ...p,
-      category: p.categoryName,
-      categoryName: p.categoryName,
-      caption: p.description || '',
-    }));
-
-    res.json(normalized);
   });
 
   // Admin Get All Portfolio Photos (Admin Only - with filters & search)
   app.get('/api/admin/portfolio/photos', requireAdmin, (req: Request, res: Response) => {
-    const { categoryId, category, status, search } = req.query;
+    try {
+      const { categoryId, category, status, search } = req.query;
 
-    let photos = [...db.portfolioPhotos];
+      const photoList = Array.isArray(db.portfolioPhotos) && db.portfolioPhotos.length > 0
+        ? db.portfolioPhotos
+        : INITIAL_PORTFOLIO_PHOTOS;
 
-    const targetCat = (categoryId || category) as string;
-    if (targetCat && targetCat !== 'Todos') {
-      const targetLower = targetCat.toLowerCase();
-      photos = photos.filter(
-        (p) =>
-          p.categoryId === targetCat ||
-          p.categoryName.toLowerCase() === targetLower ||
-          toSlug(p.categoryName) === toSlug(targetCat)
-      );
+      const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
+        ? db.portfolioCategories
+        : INITIAL_PORTFOLIO_CATEGORIES;
+
+      let photos = [...photoList];
+
+      const targetCat = (categoryId || category) as string;
+      if (targetCat && targetCat !== 'Todos') {
+        const targetLower = targetCat.toLowerCase();
+        photos = photos.filter(
+          (p) =>
+            p &&
+            (p.categoryId === targetCat ||
+              (p.categoryName && p.categoryName.toLowerCase() === targetLower) ||
+              toSlug(p.categoryName || '') === toSlug(targetCat) ||
+              ((p as any).category && String((p as any).category).toLowerCase() === targetLower))
+        );
+      }
+
+      if (status === 'active') {
+        photos = photos.filter((p) => p && p.active);
+      } else if (status === 'inactive') {
+        photos = photos.filter((p) => p && !p.active);
+      }
+
+      if (search && typeof search === 'string' && search.trim()) {
+        const q = search.trim().toLowerCase();
+        photos = photos.filter(
+          (p) =>
+            p &&
+            (((p.number || '') && String(p.number).toLowerCase().includes(q)) ||
+              ((p.title || '') && p.title.toLowerCase().includes(q)) ||
+              (p.description && p.description.toLowerCase().includes(q)) ||
+              ((p.categoryName || '') && p.categoryName.toLowerCase().includes(q)))
+        );
+      }
+
+      // Sort by category order, then photo order
+      const categoryOrderMap = new Map<string, number>();
+      catList.forEach((c) => categoryOrderMap.set(c.id, c.order || 999));
+
+      photos.sort((a, b) => {
+        const orderCatA = categoryOrderMap.get(a.categoryId) || 999;
+        const orderCatB = categoryOrderMap.get(b.categoryId) || 999;
+        if (orderCatA !== orderCatB) return orderCatA - orderCatB;
+        return (a.order || 0) - (b.order || 0);
+      });
+
+      const normalized = photos.map((p) => ({
+        ...p,
+        category: p.categoryName || (p as any).category || '',
+        categoryName: p.categoryName || (p as any).category || '',
+        caption: p.description || (p as any).caption || '',
+      }));
+
+      res.json(normalized);
+    } catch (err: any) {
+      console.error('[Portfolio Photos Admin Error]:', err);
+      res.json(INITIAL_PORTFOLIO_PHOTOS);
     }
-
-    if (status === 'active') {
-      photos = photos.filter((p) => p.active);
-    } else if (status === 'inactive') {
-      photos = photos.filter((p) => !p.active);
-    }
-
-    if (search && typeof search === 'string' && search.trim()) {
-      const q = search.trim().toLowerCase();
-      photos = photos.filter(
-        (p) =>
-          p.number.toLowerCase().includes(q) ||
-          p.title.toLowerCase().includes(q) ||
-          (p.description && p.description.toLowerCase().includes(q)) ||
-          p.categoryName.toLowerCase().includes(q)
-      );
-    }
-
-    // Sort by category order, then photo order
-    const categoryOrderMap = new Map<string, number>();
-    db.portfolioCategories.forEach((c) => categoryOrderMap.set(c.id, c.order));
-
-    photos.sort((a, b) => {
-      const orderCatA = categoryOrderMap.get(a.categoryId) || 999;
-      const orderCatB = categoryOrderMap.get(b.categoryId) || 999;
-      if (orderCatA !== orderCatB) return orderCatA - orderCatB;
-      return (a.order || 0) - (b.order || 0);
-    });
-
-    const normalized = photos.map((p) => ({
-      ...p,
-      category: p.categoryName,
-      categoryName: p.categoryName,
-      caption: p.description || '',
-    }));
-
-    res.json(normalized);
   });
 
   // Multi-Photo Upload to Portfolio (Admin Only)

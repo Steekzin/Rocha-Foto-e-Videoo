@@ -10,6 +10,7 @@ import {
   User,
   SelectionStatus,
 } from '../types.js';
+import { supabase } from './supabaseClient.js';
 
 export interface DashboardStats {
   totalCategories: number;
@@ -395,10 +396,71 @@ export const api = {
 
   // Portfolio - Categories
   async getPortfolioCategories(includeInactive: boolean = false): Promise<PortfolioCategory[]> {
-    const res = await fetch(`${API_BASE}/portfolio/categories?includeInactive=${includeInactive}`, {
-      headers: getAdminHeaders(),
-    });
-    return parseJsonResponse(res, 'Erro ao carregar categorias');
+    let categories: PortfolioCategory[] = [];
+    try {
+      const res = await fetch(`${API_BASE}/portfolio/categories?includeInactive=${includeInactive}`, {
+        headers: getAdminHeaders(),
+      });
+      categories = await parseJsonResponse<PortfolioCategory[]>(res, 'Erro ao carregar categorias');
+      if (Array.isArray(categories) && categories.length > 0) {
+        localStorage.setItem('rocha_cached_categories', JSON.stringify(categories));
+        return categories;
+      }
+    } catch (err: any) {
+      console.warn('[Categories] API indisponível, buscando fallback no Supabase/Cache:', err.message);
+    }
+
+    // Direct Supabase Fallback
+    if (supabase) {
+      try {
+        let query = supabase
+          .from('portfolio_categories')
+          .select('*')
+          .order('order_num', { ascending: true });
+        if (!includeInactive) {
+          query = query.eq('active', true);
+        }
+        const { data: sbCats, error } = await query;
+        if (!error && sbCats && sbCats.length > 0) {
+          // Fetch photos count from Supabase
+          const { data: sbPhotos } = await supabase.from('portfolio_photos').select('id, category_id, active');
+
+          const mapped: PortfolioCategory[] = sbCats.map((row: any) => {
+            const count = (sbPhotos || []).filter(
+              (p: any) => p.category_id === row.id && (includeInactive || p.active !== false)
+            ).length;
+            return {
+              id: row.id,
+              name: row.name,
+              slug: row.slug,
+              order: row.order_num || 1,
+              active: row.active !== false,
+              description: row.description || '',
+              photoCount: count,
+              createdAt: row.created_at || new Date().toISOString(),
+            };
+          });
+
+          localStorage.setItem('rocha_cached_categories', JSON.stringify(mapped));
+          return mapped;
+        }
+      } catch (sbErr: any) {
+        console.warn('[Categories] Falha ao ler diretamente do Supabase:', sbErr.message);
+      }
+    }
+
+    // LocalStorage Fallback
+    try {
+      const cached = localStorage.getItem('rocha_cached_categories');
+      if (cached) {
+        const parsed: PortfolioCategory[] = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return includeInactive ? parsed : parsed.filter((c) => c.active);
+        }
+      }
+    } catch {}
+
+    return [];
   },
 
   async createPortfolioCategory(category: {
@@ -488,7 +550,44 @@ export const api = {
       });
       serverPhotos = await parseJsonResponse<PortfolioPhoto[]>(res, 'Erro ao carregar fotografias do portfólio');
     } catch (err: any) {
-      console.warn('Aviso ao buscar fotos do servidor (usando fotos locais se houver):', err.message);
+      console.warn('Aviso ao buscar fotos do servidor (usando fallback no Supabase/local):', err.message);
+    }
+
+    // Direct Supabase Fallback if serverPhotos returned empty or failed
+    if ((!serverPhotos || serverPhotos.length === 0) && supabase) {
+      try {
+        let query = supabase.from('portfolio_photos').select('*').order('order_num', { ascending: true });
+        if (params?.activeOnly) {
+          query = query.eq('active', true);
+        } else if (params?.status === 'active') {
+          query = query.eq('active', true);
+        } else if (params?.status === 'inactive') {
+          query = query.eq('active', false);
+        }
+
+        const { data: sbPhotos, error } = await query;
+        if (!error && sbPhotos && sbPhotos.length > 0) {
+          serverPhotos = sbPhotos.map((row: any) => ({
+            id: row.id,
+            categoryId: row.category_id,
+            categoryName: row.category_name,
+            category: row.category_name,
+            number: row.number,
+            order: row.order_num || 1,
+            imageUrl: row.image_url,
+            thumbnailUrl: row.thumbnail_url || row.image_url,
+            title: row.title,
+            description: row.description || '',
+            caption: row.description || '',
+            aspect: row.aspect || 'portrait',
+            active: row.active !== false,
+            featured: Boolean(row.featured),
+            createdAt: row.created_at || new Date().toISOString(),
+          }));
+        }
+      } catch (sbErr: any) {
+        console.warn('Falha ao buscar fotos diretamente do Supabase:', sbErr.message);
+      }
     }
 
     const normalizePhoto = (p: any): PortfolioPhoto => {
