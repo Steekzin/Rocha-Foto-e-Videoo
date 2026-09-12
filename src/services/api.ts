@@ -887,4 +887,45 @@ export const api = {
     });
     return parseJsonResponse(res, 'Erro ao restaurar fotos demo');
   },
+
+  // Supabase Cloud Database Management
+  async getSupabaseStatus(): Promise<{
+    configured: boolean;
+    connected: boolean;
+    provider: 'supabase' | 'local_json';
+    url: string | null;
+    error?: string;
+    counts: {
+      clients: number;
+      events: number;
+      galleries: number;
+      photos: number;
+      selections: number;
+      categories: number;
+      portfolioPhotos: number;
+    };
+  }> {
+    const res = await fetch(`${API_BASE}/supabase/status`);
+    return parseJsonResponse(res, 'Erro ao verificar status do Supabase');
+  },
+
+  async migrateToSupabase(): Promise<{
+    success: boolean;
+    message: string;
+    counts: {
+      clients: number;
+      events: number;
+      galleries: number;
+      photos: number;
+      selections: number;
+      categories: number;
+      portfolioPhotos: number;
+    };
+  }> {
+    const res = await fetch(`${API_BASE}/supabase/migrate`, {
+      method: 'POST',
+      headers: getAdminHeaders(),
+    });
+    return parseJsonResponse(res, 'Erro ao migrar dados para o Supabase');
+  },
 };

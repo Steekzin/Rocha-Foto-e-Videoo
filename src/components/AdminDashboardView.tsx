@@ -29,6 +29,7 @@ import {
   AlertTriangle,
   MessageCircle,
   Sparkles,
+  Database,
 } from 'lucide-react';
 import {
   Client,
@@ -43,6 +44,7 @@ import {
 import { api, DashboardStats } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
 import { AdminPortfolioTab } from './AdminPortfolioTab.js';
+import { AdminDatabaseTab } from './AdminDatabaseTab.js';
 
 interface AdminDashboardViewProps {
   currentUser: User | null;
@@ -59,8 +61,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [authError, setAuthError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Tabs: 'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio'
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio'>('overview');
+  // Tabs: 'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'database'
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'database'
+  >('overview');
 
   // Master Data
   const [clients, setClients] = useState<Client[]>([]);
@@ -681,6 +685,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           >
             <Sparkles className="w-4 h-4" />
             <span>Portfólio Público</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('database')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-2 ${
+              activeTab === 'database'
+                ? 'bg-[#c99e64] text-[#0c0d0e]'
+                : 'text-[#9ca3af] hover:text-white hover:bg-[#15181f]'
+            }`}
+          >
+            <Database className="w-4 h-4" />
+            <span>Supabase / Banco</span>
           </button>
         </div>
 
@@ -1418,6 +1434,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         {/* 6. PORTFOLIO TAB */}
         {activeTab === 'portfolio' && (
           <AdminPortfolioTab />
+        )}
+
+        {/* 7. SUPABASE DATABASE TAB */}
+        {activeTab === 'database' && (
+          <AdminDatabaseTab />
         )}
       </div>
 

@@ -53,6 +53,7 @@ export interface PhotoEvent {
   clientName: string;
   name: string;
   date: string;
+  location?: string;
   category: EventCategory;
   description?: string;
   status: EventStatus;

@@ -5,6 +5,11 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import multer from 'multer';
 import AdmZip from 'adm-zip';
+import dotenv from 'dotenv';
+
+// Load .env variables immediately for standalone and cloud use
+dotenv.config();
+
 import {
   INITIAL_CLIENTS,
   INITIAL_EVENTS,
@@ -26,6 +31,31 @@ import {
   PortfolioPhoto,
   User,
 } from './src/types.js';
+import {
+  isSupabaseConfigured,
+  testSupabaseConnection,
+  loadClientsFromSupabase,
+  loadEventsFromSupabase,
+  loadGalleriesFromSupabase,
+  loadPhotosFromSupabase,
+  loadSelectionsFromSupabase,
+  loadPortfolioCategoriesFromSupabase,
+  loadPortfolioPhotosFromSupabase,
+  syncClientToSupabase,
+  deleteClientFromSupabase,
+  syncEventToSupabase,
+  deleteEventFromSupabase,
+  syncGalleryToSupabase,
+  deleteGalleryFromSupabase,
+  syncPhotosToSupabase,
+  deletePhotoFromSupabase,
+  syncSelectionToSupabase,
+  syncCategoryToSupabase,
+  deleteCategoryFromSupabase,
+  syncPortfolioPhotosToSupabase,
+  deletePortfolioPhotoFromSupabase,
+  migrateLocalDatabaseToSupabase,
+} from './server/supabase.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -204,6 +234,80 @@ function saveDatabase() {
 
 loadDatabase();
 
+async function initSupabaseDatabase() {
+  if (!isSupabaseConfigured()) {
+    console.log('[Database] Supabase não configurado no .env. Utilizando banco local (data/rocha_db.json).');
+    return;
+  }
+
+  console.log('[Database] Supabase detectado no .env. Testando conexão com a nuvem...');
+  const test = await testSupabaseConnection();
+  if (!test.connected) {
+    console.warn('[Database] Não foi possível conectar ao Supabase:', test.error);
+    console.warn('[Database] Continuando com banco de dados local (data/rocha_db.json).');
+    return;
+  }
+
+  console.log('[Database] Conexão com Supabase estabelecida com sucesso!');
+  try {
+    const [sbClients, sbEvents, sbGalleries, sbPhotos, sbSelections, sbCategories, sbPortfolioPhotos] =
+      await Promise.all([
+        loadClientsFromSupabase(),
+        loadEventsFromSupabase(),
+        loadGalleriesFromSupabase(),
+        loadPhotosFromSupabase(),
+        loadSelectionsFromSupabase(),
+        loadPortfolioCategoriesFromSupabase(),
+        loadPortfolioPhotosFromSupabase(),
+      ]);
+
+    let loadedAny = false;
+    if (sbCategories && sbCategories.length > 0) {
+      db.portfolioCategories = sbCategories;
+      loadedAny = true;
+    }
+    if (sbPortfolioPhotos && sbPortfolioPhotos.length > 0) {
+      db.portfolioPhotos = sbPortfolioPhotos;
+      loadedAny = true;
+    }
+    if (sbClients && sbClients.length > 0) {
+      db.clients = sbClients;
+      loadedAny = true;
+    }
+    if (sbEvents && sbEvents.length > 0) {
+      db.events = sbEvents;
+      loadedAny = true;
+    }
+    if (sbGalleries && sbGalleries.length > 0) {
+      db.galleries = sbGalleries;
+      loadedAny = true;
+    }
+    if (sbPhotos && sbPhotos.length > 0) {
+      db.photos = sbPhotos;
+      loadedAny = true;
+    }
+    if (sbSelections && sbSelections.length > 0) {
+      db.selections = sbSelections;
+      loadedAny = true;
+    }
+
+    if (loadedAny) {
+      syncPortfolioLegacy();
+      saveDatabase();
+      console.log('[Database] Dados carregados do Supabase e sincronizados com cache local.');
+    } else {
+      console.log('[Database] Tabelas do Supabase estão vazias. Inicializando com dados locais...');
+      await migrateLocalDatabaseToSupabase(db);
+      console.log('[Database] Dados locais migrados para o Supabase com sucesso!');
+    }
+  } catch (err: any) {
+    console.error('[Database] Erro ao sincronizar dados do Supabase:', err.message);
+  }
+}
+
+// Start Supabase sync in background
+initSupabaseDatabase();
+
 const app = express();
 
 // Express parser with generous limit for photo data / base64
@@ -211,6 +315,44 @@ app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 
 async function setupRoutes() {
+  // Supabase Status & Diagnostics
+  app.get('/api/supabase/status', async (req: Request, res: Response) => {
+    try {
+      const status = await testSupabaseConnection();
+      res.json({
+        ...status,
+        provider: status.connected ? 'supabase' : 'local_json',
+        configured: isSupabaseConfigured(),
+        counts: {
+          clients: db.clients.length,
+          events: db.events.length,
+          galleries: db.galleries.length,
+          photos: db.photos.length,
+          selections: db.selections.length,
+          categories: db.portfolioCategories.length,
+          portfolioPhotos: db.portfolioPhotos.length,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Supabase 1-Click Migration
+  app.post('/api/supabase/migrate', async (req: Request, res: Response) => {
+    try {
+      if (!isSupabaseConfigured()) {
+        return res.status(400).json({
+          error:
+            'Supabase não configurado. Adicione SUPABASE_URL e SUPABASE_ANON_KEY no arquivo .env antes de migrar.',
+        });
+      }
+      const result = await migrateLocalDatabaseToSupabase(db);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao migrar dados para o Supabase' });
+    }
+  });
 
   // Helper auth simulation: client password matches client email or default demo passwords
   // Admin credentials: admin@rochafotoevideo.com.br / admin123

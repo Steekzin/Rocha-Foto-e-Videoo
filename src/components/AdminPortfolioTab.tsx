@@ -78,8 +78,8 @@ export const AdminPortfolioTab: React.FC = () => {
   const [replacingPhoto, setReplacingPhoto] = useState<PortfolioPhoto | null>(null);
   const [replacementFile, setReplacementFile] = useState<File | null>(null);
 
-  // Batch import states
-  const [replaceDemo, setReplaceDemo] = useState(true);
+  // Batch import states (default to false so uploads are always cumulative)
+  const [replaceDemo, setReplaceDemo] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
