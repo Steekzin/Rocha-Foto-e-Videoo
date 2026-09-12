@@ -2,7 +2,6 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import multer from 'multer';
 import AdmZip from 'adm-zip';
 import dotenv from 'dotenv';
@@ -228,7 +227,14 @@ function saveDatabase() {
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Error saving database:', err);
+    console.error('Error saving database to disk:', err);
+  }
+
+  // If Supabase is active, persist changes to cloud database asynchronously
+  if (isSupabaseConfigured()) {
+    migrateLocalDatabaseToSupabase(db).catch((err: any) => {
+      console.warn('[Supabase AutoSync] Aviso na sincronização com a nuvem:', err.message);
+    });
   }
 }
 
@@ -357,60 +363,65 @@ async function setupRoutes() {
   // Helper auth simulation: client password matches client email or default demo passwords
   // Admin credentials: admin@rochafotoevideo.com.br / admin123
   app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { email, password } = req.body;
-    const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanPass = (password || '').trim();
+    try {
+      const { email, password } = req.body || {};
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanPass = (password || '').trim();
 
-    if (
-      cleanEmail === 'admin@rochafotoevideo.com.br' ||
-      cleanEmail === 'admin@rocha.com.br' ||
-      cleanEmail === 'admin'
-    ) {
-      if (cleanPass === 'admin123' || cleanPass === 'admin' || cleanPass === '123456') {
-        const adminUser: User = {
-          id: 'usr-admin',
-          name: 'Rocha Foto & Vídeo (Admin)',
-          email: 'admin@rochafotoevideo.com.br',
-          role: 'admin',
-        };
-        return res.json({ success: true, user: adminUser, token: 'token-admin-session' });
-      } else {
-        return res.status(401).json({ success: false, message: 'Senha incorreta para Administrador.' });
+      if (
+        cleanEmail === 'admin@rochafotoevideo.com.br' ||
+        cleanEmail === 'admin@rocha.com.br' ||
+        cleanEmail === 'admin'
+      ) {
+        if (cleanPass === 'admin123' || cleanPass === 'admin' || cleanPass === '123456') {
+          const adminUser: User = {
+            id: 'usr-admin',
+            name: 'Rocha Foto & Vídeo (Admin)',
+            email: 'admin@rochafotoevideo.com.br',
+            role: 'admin',
+          };
+          return res.json({ success: true, user: adminUser, token: 'token-admin-session' });
+        } else {
+          return res.status(401).json({ success: false, message: 'Senha incorreta para Administrador.' });
+        }
       }
-    }
 
-    // Check registered clients
-    const client = db.clients.find((c) => c.email.toLowerCase() === cleanEmail);
-    if (client) {
-      const clientPassword = client.password || 'cliente123';
-      const validPass =
-        cleanPass === clientPassword ||
-        cleanPass === 'cliente123' ||
-        cleanPass === '123456' ||
-        cleanPass === client.name.toLowerCase().split(' ')[0] + '123';
+      // Check registered clients
+      const client = (db.clients || []).find((c) => (c.email || '').toLowerCase() === cleanEmail);
+      if (client) {
+        const clientPassword = client.password || 'cliente123';
+        const validPass =
+          cleanPass === clientPassword ||
+          cleanPass === 'cliente123' ||
+          cleanPass === '123456' ||
+          cleanPass === (client.name || '').toLowerCase().split(' ')[0] + '123';
 
-      if (validPass) {
-        const clientUser: User = {
-          id: `usr-${client.id}`,
-          name: client.name,
-          email: client.email,
-          role: 'client',
-          clientId: client.id,
-        };
-        return res.json({ success: true, user: clientUser, token: `token-client-${client.id}` });
-      } else {
-        return res.status(401).json({
-          success: false,
-          message: 'Senha incorreta para este cliente. Caso tenha esquecido, contate o estúdio Rocha Foto & Vídeo.',
-        });
+        if (validPass) {
+          const clientUser: User = {
+            id: `usr-${client.id}`,
+            name: client.name,
+            email: client.email,
+            role: 'client',
+            clientId: client.id,
+          };
+          return res.json({ success: true, user: clientUser, token: `token-client-${client.id}` });
+        } else {
+          return res.status(401).json({
+            success: false,
+            message: 'Senha incorreta para este cliente. Caso tenha esquecido, contate o estúdio Rocha Foto & Vídeo.',
+          });
+        }
       }
-    }
 
-    // If client not found
-    return res.status(401).json({
-      success: false,
-      message: 'E-mail não cadastrado. Entre em contato com a Rocha Foto & Vídeo para liberar seu acesso.',
-    });
+      // If client not found
+      return res.status(401).json({
+        success: false,
+        message: 'E-mail não cadastrado. Entre em contato com a Rocha Foto & Vídeo para liberar seu acesso.',
+      });
+    } catch (err: any) {
+      console.error('[Auth Error]:', err);
+      return res.status(500).json({ success: false, message: 'Erro interno no servidor ao realizar login: ' + (err.message || err) });
+    }
   });
 
   // Client Management (Admin)
@@ -2164,6 +2175,7 @@ setupRoutes();
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
