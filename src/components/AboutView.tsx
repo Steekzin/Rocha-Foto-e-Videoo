@@ -156,7 +156,7 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                 src="/rocha_fachada.jpg"
                 alt="Studio Rocha Foto & Vídeo - R. Juca Prates, 610"
                 referrerPolicy="no-referrer"
-                className={`rounded-xl h-64 sm:h-72 w-full object-cover border ${
+                className={`rounded-xl h-64 sm:h-72 w-full object-cover object-top border ${
                   isLight ? 'border-gray-200 shadow-md' : 'border-[#22272f]'
                 }`}
               />

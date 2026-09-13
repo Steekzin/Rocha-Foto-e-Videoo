@@ -1792,6 +1792,8 @@ async function setupRoutes() {
         ...currentPhoto,
         categoryId: targetCatId,
         categoryName: targetCatName,
+        imageUrl: req.body.imageUrl !== undefined ? req.body.imageUrl : currentPhoto.imageUrl,
+        thumbnailUrl: req.body.thumbnailUrl !== undefined ? req.body.thumbnailUrl : (req.body.imageUrl !== undefined ? req.body.imageUrl : currentPhoto.thumbnailUrl),
         title: title !== undefined ? title.trim() : currentPhoto.title,
         description: description !== undefined ? description.trim() : currentPhoto.description,
         number: number !== undefined && String(number).trim() ? String(number).trim() : currentPhoto.number,

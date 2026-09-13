@@ -401,12 +401,12 @@ export const INITIAL_SELECTIONS: SelectionRecord[] = [
 export const INITIAL_PORTFOLIO: PortfolioItem[] = [
   {
     id: 'port-1',
-    title: 'Cerimônia ao Ar Livre no Pôr do Sol',
+    title: 'Cerimônia Religiosa no Altar',
     category: 'Casamentos',
-    imageUrl: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80',
+    imageUrl: '/wedding_ceremony_altar.jpg',
     aspect: 'portrait',
     featured: true,
-    caption: 'Casamento com luz dourada natural e tons quentes.',
+    caption: 'Cerimônia Religiosa no altar da igreja com bênção matrimonial.',
   },
   {
     id: 'port-2',

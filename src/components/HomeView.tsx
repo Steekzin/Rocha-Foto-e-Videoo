@@ -105,8 +105,9 @@ export const HomeView: React.FC<HomeViewProps> = ({ setActiveTab }) => {
           {/* Left Column: Full-width Altar Wedding Photo */}
           <div className="relative h-[440px] md:h-[600px] overflow-hidden group">
             <img
-              src="https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=85"
+              src="/wedding_ceremony_altar.jpg"
               alt="Fotógrafo de casamento Rocha no altar da igreja"
+              referrerPolicy="no-referrer"
               className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700"
             />
             <div className={`absolute inset-0 ${
@@ -219,7 +220,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ setActiveTab }) => {
               src="/rocha_fachada.jpg"
               alt="Fachada Rocha Foto & Vídeo - Studio R. Juca Prates, 610 Centro"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700"
+              className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-700"
             />
             <div className={`absolute inset-0 ${
               theme === 'dark'

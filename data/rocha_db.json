@@ -54,27 +54,6 @@
   ],
   "selections": [
     {
-      "id": "sel-1789301437507",
-      "clientName": "Mariana Silva",
-      "eventName": "Casamento Mariana & Lucas",
-      "galleryTitle": "Galeria Rocha",
-      "selectedPhotos": [
-        {
-          "id": "p-1",
-          "number": "001"
-        },
-        {
-          "id": "p-2",
-          "number": "007"
-        }
-      ],
-      "photoCount": 2,
-      "totalPrice": null,
-      "notes": "",
-      "status": "Nova",
-      "createdAt": "2026-09-13T12:10:37.507Z"
-    },
-    {
       "id": "sel-1789065975176",
       "clientId": "cli-1789065735523",
       "clientName": "Eduardo",
@@ -97,26 +76,35 @@
       "notes": "Apenas essas",
       "status": "Nova",
       "createdAt": "2026-09-10T18:46:15.176+00:00"
+    },
+    {
+      "id": "sel-1789301437507",
+      "clientId": "",
+      "clientName": "Mariana Silva",
+      "clientEmail": null,
+      "clientPhone": null,
+      "eventId": "",
+      "eventName": "Casamento Mariana & Lucas",
+      "galleryId": "",
+      "galleryTitle": "Galeria Rocha",
+      "selectedPhotos": [
+        {
+          "id": "p-1",
+          "number": "001"
+        },
+        {
+          "id": "p-2",
+          "number": "007"
+        }
+      ],
+      "photoCount": 2,
+      "totalPrice": null,
+      "notes": "",
+      "status": "Nova",
+      "createdAt": "2026-09-13T12:10:37.507+00:00"
     }
   ],
   "portfolio": [
-    {
-      "id": "port-1789157709950-0-e0xy",
-      "title": "rocha logo",
-      "category": "Casamentos",
-      "categoryId": "cat-casamentos",
-      "categoryName": "Casamentos",
-      "number": "001",
-      "order": 1,
-      "active": true,
-      "imageUrl": "/portfolio/Casamentos/1789157709950_0_rocha-logo.svg",
-      "thumbnailUrl": "/portfolio/Casamentos/1789157709950_0_rocha-logo.svg",
-      "aspect": "portrait",
-      "caption": "Casamentos — Fotografia original Rocha Foto & Vídeo",
-      "description": "Casamentos — Fotografia original Rocha Foto & Vídeo",
-      "featured": false,
-      "createdAt": "2026-09-11T20:15:09.95+00:00"
-    },
     {
       "id": "port-local-1789234450528-307q",
       "title": "1789069009032 0 Debutante Beatriz Ensaio 02",
@@ -150,6 +138,23 @@
       "description": "Batizado — Fotografia original Rocha Foto & Vídeo",
       "featured": false,
       "createdAt": "2026-09-12T17:35:21.642+00:00"
+    },
+    {
+      "id": "port-1789157709950-0-e0xy",
+      "title": "Cerimônia Religiosa no Altar",
+      "category": "Casamentos",
+      "categoryId": "cat-casamentos",
+      "categoryName": "Casamentos",
+      "number": "001",
+      "order": 1,
+      "active": true,
+      "imageUrl": "/wedding_ceremony_altar.jpg",
+      "thumbnailUrl": "/wedding_ceremony_altar.jpg",
+      "aspect": "portrait",
+      "caption": "Casamento — Cerimônia religiosa e bênção matrimonial no altar",
+      "description": "Casamento — Cerimônia religiosa e bênção matrimonial no altar",
+      "featured": false,
+      "createdAt": "2026-09-11T20:15:09.95+00:00"
     },
     {
       "id": "port-local-1789234450529-xjt4",
@@ -457,23 +462,6 @@
   ],
   "portfolioPhotos": [
     {
-      "id": "port-1789157709950-0-e0xy",
-      "categoryId": "cat-casamentos",
-      "categoryName": "Casamentos",
-      "category": "Casamentos",
-      "number": "001",
-      "order": 1,
-      "imageUrl": "/portfolio/Casamentos/1789157709950_0_rocha-logo.svg",
-      "thumbnailUrl": "/portfolio/Casamentos/1789157709950_0_rocha-logo.svg",
-      "title": "rocha logo",
-      "description": "Casamentos — Fotografia original Rocha Foto & Vídeo",
-      "caption": "Casamentos — Fotografia original Rocha Foto & Vídeo",
-      "aspect": "portrait",
-      "active": true,
-      "featured": false,
-      "createdAt": "2026-09-11T20:15:09.95+00:00"
-    },
-    {
       "id": "port-local-1789234450528-307q",
       "categoryId": "cat-15-anos",
       "categoryName": "15 Anos",
@@ -506,6 +494,23 @@
       "active": true,
       "featured": false,
       "createdAt": "2026-09-12T17:35:21.642+00:00"
+    },
+    {
+      "id": "port-1789157709950-0-e0xy",
+      "categoryId": "cat-casamentos",
+      "categoryName": "Casamentos",
+      "category": "Casamentos",
+      "number": "001",
+      "order": 1,
+      "imageUrl": "/wedding_ceremony_altar.jpg",
+      "thumbnailUrl": "/wedding_ceremony_altar.jpg",
+      "title": "Cerimônia Religiosa no Altar",
+      "description": "Casamento — Cerimônia religiosa e bênção matrimonial no altar",
+      "caption": "Casamento — Cerimônia religiosa e bênção matrimonial no altar",
+      "aspect": "portrait",
+      "active": true,
+      "featured": false,
+      "createdAt": "2026-09-11T20:15:09.95+00:00"
     },
     {
       "id": "port-local-1789234450529-xjt4",
