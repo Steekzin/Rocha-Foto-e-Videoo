@@ -54,6 +54,27 @@
   ],
   "selections": [
     {
+      "id": "sel-1789301437507",
+      "clientName": "Mariana Silva",
+      "eventName": "Casamento Mariana & Lucas",
+      "galleryTitle": "Galeria Rocha",
+      "selectedPhotos": [
+        {
+          "id": "p-1",
+          "number": "001"
+        },
+        {
+          "id": "p-2",
+          "number": "007"
+        }
+      ],
+      "photoCount": 2,
+      "totalPrice": null,
+      "notes": "",
+      "status": "Nova",
+      "createdAt": "2026-09-13T12:10:37.507Z"
+    },
+    {
       "id": "sel-1789065975176",
       "clientId": "cli-1789065735523",
       "clientName": "Eduardo",
@@ -423,6 +444,15 @@
       "active": true,
       "description": "Produções cinematográficas em 4K e teasers.",
       "createdAt": "2026-01-01T00:00:00+00:00"
+    },
+    {
+      "id": "cat-1789300728558-aq4d",
+      "name": "Teste Nova Categoria",
+      "slug": "teste-nova-categoria",
+      "order": 24,
+      "active": true,
+      "description": "",
+      "createdAt": "2026-09-13T11:58:48.558+00:00"
     }
   ],
   "portfolioPhotos": [

@@ -153,8 +153,9 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
           <div className="lg:col-span-6 relative">
             <div className="grid grid-cols-2 gap-4">
               <img
-                src="https://images.unsplash.com/photo-1544077960-604201fe74bc?auto=format&fit=crop&w=600&q=80"
-                alt="Equipe e Cobertura Rocha"
+                src="/rocha_fachada.jpg"
+                alt="Studio Rocha Foto & Vídeo - R. Juca Prates, 610"
+                referrerPolicy="no-referrer"
                 className={`rounded-xl h-64 sm:h-72 w-full object-cover border ${
                   isLight ? 'border-gray-200 shadow-md' : 'border-[#22272f]'
                 }`}

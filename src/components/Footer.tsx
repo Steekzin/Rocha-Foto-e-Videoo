@@ -136,15 +136,17 @@ export const Footer: React.FC<FooterProps> = ({ setActiveTab }) => {
             <div className="space-y-2.5 text-xs">
               <div className="flex items-start gap-2.5">
                 <MapPin className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0 mt-0.5" />
-                <span>Montes Claros — Minas Gerais (MG)</span>
+                <span>R. Juca Prates, 610 - Centro, Montes Claros - MG</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <Phone className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />
-                <span>(38) 99999-0000 / WhatsApp</span>
+                <span>(38) 9106-5054 / (38) 3084-3444</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <Mail className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />
-                <span>contato@rochafotoevideo.com.br</span>
+                <a href="mailto:rochafoto.video@hotmail.com" className="hover:underline">
+                  rochafoto.video@hotmail.com
+                </a>
               </div>
             </div>
 

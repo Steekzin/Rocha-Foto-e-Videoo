@@ -35,9 +35,10 @@ export const ContactView: React.FC = () => {
       form.date || 'A definir'
     )}%0A- Mensagem: ${encodeURIComponent(form.message)}`;
 
-    const whatsappUrl = `https://wa.me/5511987654321?text=${formattedMsg}`;
+    const whatsappUrl = `https://wa.me/553891065054?text=${formattedMsg}`;
     window.open(whatsappUrl, '_blank');
-    setSubmitted(true);
+    setSubmitted(false);
+    alert('Mensagem preparada! Redirecionando para o WhatsApp oficial da Rocha Foto & Vídeo.');
   };
 
   return (
@@ -112,15 +113,16 @@ export const ContactView: React.FC = () => {
                       isLight ? 'text-gray-500' : 'text-[#828a95]'
                     }`}
                   >
-                    WhatsApp / Telefone
+                    WhatsApp & Telefones
                   </span>
-                  <span
-                    className={`font-semibold ${
+                  <div
+                    className={`font-semibold space-y-0.5 ${
                       isLight ? 'text-gray-900' : 'text-white'
                     }`}
                   >
-                    (11) 98765-4321
-                  </span>
+                    <p>+55 (38) 9106-5054 (WhatsApp)</p>
+                    <p className="text-[11px] text-gray-500 font-normal">(38) 3084-3444 (Studio Fixo)</p>
+                  </div>
                 </div>
               </div>
 
@@ -138,41 +140,16 @@ export const ContactView: React.FC = () => {
                       isLight ? 'text-gray-500' : 'text-[#828a95]'
                     }`}
                   >
-                    E-mail Profissional
+                    E-mail Oficial
                   </span>
-                  <span
-                    className={`font-semibold ${
+                  <a
+                    href="mailto:rochafoto.video@hotmail.com"
+                    className={`font-semibold hover:underline ${
                       isLight ? 'text-gray-900' : 'text-white'
                     }`}
                   >
-                    contato@rochafotoevideo.com.br
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <div
-                  className={`p-2 rounded-lg text-[#c99e64] ${
-                    isLight ? 'bg-amber-50' : 'bg-[#1b1f28]'
-                  }`}
-                >
-                  <Clock className="w-4 h-4" />
-                </div>
-                <div>
-                  <span
-                    className={`block font-medium ${
-                      isLight ? 'text-gray-500' : 'text-[#828a95]'
-                    }`}
-                  >
-                    Horário do Studio
-                  </span>
-                  <span
-                    className={`font-semibold ${
-                      isLight ? 'text-gray-900' : 'text-white'
-                    }`}
-                  >
-                    Segunda a Sábado, das 09h às 19h (com agendamento)
-                  </span>
+                    rochafoto.video@hotmail.com
+                  </a>
                 </div>
               </div>
 
@@ -190,15 +167,66 @@ export const ContactView: React.FC = () => {
                       isLight ? 'text-gray-500' : 'text-[#828a95]'
                     }`}
                   >
-                    Localização
+                    Endereço do Studio
                   </span>
                   <span
-                    className={`font-semibold ${
+                    className={`font-semibold leading-relaxed block ${
                       isLight ? 'text-gray-900' : 'text-white'
                     }`}
                   >
-                    Studio Central de Fotografia — São Paulo / Grande SP
+                    R. Juca Prates, 610 - Centro, Montes Claros - MG, 39400-078
                   </span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 pt-2">
+                <div
+                  className={`p-2 rounded-lg text-[#c99e64] ${
+                    isLight ? 'bg-amber-50' : 'bg-[#1b1f28]'
+                  }`}
+                >
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div className="w-full">
+                  <span
+                    className={`block font-medium mb-1.5 ${
+                      isLight ? 'text-gray-500' : 'text-[#828a95]'
+                    }`}
+                  >
+                    Horários de Atendimento
+                  </span>
+                  <div className={`space-y-1 text-[11px] rounded-lg p-2.5 ${
+                    isLight ? 'bg-gray-100 text-gray-700' : 'bg-[#0e1013] text-gray-300'
+                  }`}>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5">
+                      <span className="font-medium">Segunda-feira:</span>
+                      <span>09:00 - 17:00</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5">
+                      <span className="font-medium">Terça-feira:</span>
+                      <span>09:00 - 17:00</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5 text-amber-600/90 dark:text-amber-400/80">
+                      <span className="font-medium">Quarta-feira:</span>
+                      <span>Fechada (Produção externa)</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5">
+                      <span className="font-medium">Quinta-feira:</span>
+                      <span>09:00 - 17:00</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5">
+                      <span className="font-medium">Sexta-feira:</span>
+                      <span>09:00 - 17:00</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 border-b border-black/5 dark:border-white/5">
+                      <span className="font-medium">Sábado:</span>
+                      <span>09:00 - 12:00</span>
+                    </div>
+                    <div className="flex justify-between py-0.5 text-gray-400 dark:text-gray-500">
+                      <span className="font-medium">Domingo:</span>
+                      <span>Fechada (Eventos)</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -209,13 +237,13 @@ export const ContactView: React.FC = () => {
               }`}
             >
               <a
-                href="https://wa.me/5511987654321?text=Olá,%20gostaria%20de%20conversar%20sobre%20a%20cobertura%20do%20meu%20evento"
+                href="https://wa.me/553891065054?text=Olá,%20gostaria%20de%20conversar%20sobre%20a%20cobertura%20do%20meu%20evento%20na%20Rocha%20Foto%20e%20Vídeo"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full py-3 bg-[#22c55e] hover:bg-[#16a34a] text-black font-bold text-xs uppercase tracking-wider rounded-xl transition-colors flex items-center justify-center gap-2 shadow-md"
               >
                 <MessageSquare className="w-4 h-4" />
-                <span>Conversar no WhatsApp Agora</span>
+                <span>Conversar no WhatsApp Oficial</span>
               </a>
             </div>
           </div>

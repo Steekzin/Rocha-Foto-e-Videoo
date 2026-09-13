@@ -5,13 +5,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  Copy,
-  Check,
-  ExternalLink,
   UploadCloud,
   FileCode,
   ShieldCheck,
-  Terminal,
   Layers,
   Users,
   Calendar,
@@ -23,8 +19,6 @@ import { api } from '../services/api.js';
 export const AdminDatabaseTab: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [migrating, setMigrating] = useState(false);
-  const [copiedEnv, setCopiedEnv] = useState(false);
-  const [copiedSqlPath, setCopiedSqlPath] = useState(false);
   const [migrationResult, setMigrationResult] = useState<{
     success: boolean;
     message: string;
@@ -92,20 +86,6 @@ export const AdminDatabaseTab: React.FC = () => {
       setMigrating(false);
     }
   };
-
-  const sampleEnv = `# Configuração para rodar fora do Google AI Studio (Local, VPS, Vercel, Docker)
-PORT=3000
-NODE_ENV=development
-APP_URL=http://localhost:3000
-
-# Supabase (PostgreSQL Cloud)
-SUPABASE_URL=${dbStatus?.url || 'https://seu-projeto.supabase.co'}
-SUPABASE_ANON_KEY=sua-chave-anon-publica-aqui
-SUPABASE_SERVICE_ROLE_KEY=sua-chave-service-role-aqui
-
-# Frontend Vite
-VITE_SUPABASE_URL=${dbStatus?.url || 'https://seu-projeto.supabase.co'}
-VITE_SUPABASE_ANON_KEY=sua-chave-anon-publica-aqui`;
 
   return (
     <div className="space-y-8 animate-fadeIn text-[#f3f4f6]">
@@ -333,116 +313,6 @@ VITE_SUPABASE_ANON_KEY=sua-chave-anon-publica-aqui`;
             <p className="text-xl font-bold text-white">{dbStatus?.counts.portfolioPhotos ?? 0}</p>
             <p className="text-[10px] text-[#828a95] uppercase">Fotos Portfólio</p>
           </div>
-        </div>
-      </div>
-
-      {/* Step-by-Step Guide for Running Outside Google AI Studio */}
-      <div className="bg-[#12151a] border border-[#20252e] rounded-2xl p-6 space-y-6">
-        <div className="flex items-center gap-3">
-          <Terminal className="w-5 h-5 text-[#c99e64]" />
-          <div>
-            <h3 className="text-base font-semibold text-white">
-              Guia: Como Executar Fora da Plataforma Google AI Studio
-            </h3>
-            <p className="text-xs text-[#9ca3af]">
-              Instruções simples para rodar localmente no seu computador (VS Code), VPS, Docker ou Vercel com Supabase.
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Step 1 */}
-          <div className="bg-[#0a0c0e] border border-[#1e232b] rounded-xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#c99e64]/20 text-[#c99e64] text-xs font-bold flex items-center justify-center border border-[#c99e64]/30">
-                1
-              </span>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-white">
-                Criar Projeto Supabase
-              </h4>
-            </div>
-            <p className="text-xs text-[#9ca3af] leading-relaxed">
-              Acesse o site oficial do Supabase e crie um projeto gratuito (PostgreSQL).
-            </p>
-            <a
-              href="https://supabase.com"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs text-[#c99e64] hover:underline"
-            >
-              <span>Abrir Supabase Dashboard</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-
-          {/* Step 2 */}
-          <div className="bg-[#0a0c0e] border border-[#1e232b] rounded-xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#c99e64]/20 text-[#c99e64] text-xs font-bold flex items-center justify-center border border-[#c99e64]/30">
-                2
-              </span>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-white">
-                Executar o Script SQL
-              </h4>
-            </div>
-            <p className="text-xs text-[#9ca3af] leading-relaxed">
-              No painel do Supabase, clique em <strong>SQL Editor</strong> &gt; <strong>New query</strong> e cole o conteúdo de <code className="text-[#c99e64]">supabase_schema.sql</code>.
-            </p>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText('supabase_schema.sql');
-                setCopiedSqlPath(true);
-                setTimeout(() => setCopiedSqlPath(false), 2000);
-              }}
-              className="inline-flex items-center gap-1.5 text-xs text-[#c99e64] hover:underline cursor-pointer"
-            >
-              {copiedSqlPath ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-              <span>{copiedSqlPath ? 'Caminho copiado!' : 'Copiar nome do arquivo'}</span>
-            </button>
-          </div>
-
-          {/* Step 3 */}
-          <div className="bg-[#0a0c0e] border border-[#1e232b] rounded-xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#c99e64]/20 text-[#c99e64] text-xs font-bold flex items-center justify-center border border-[#c99e64]/30">
-                3
-              </span>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-white">
-                Preencher o .env
-              </h4>
-            </div>
-            <p className="text-xs text-[#9ca3af] leading-relaxed">
-              Copie a <strong>URL</strong> e a chave <strong>anon</strong> em <em>Project Settings &gt; API</em> e salve no arquivo <code className="text-[#c99e64]">.env</code>.
-            </p>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(sampleEnv);
-                setCopiedEnv(true);
-                setTimeout(() => setCopiedEnv(false), 2000);
-              }}
-              className="inline-flex items-center gap-1.5 text-xs text-[#c99e64] hover:underline cursor-pointer"
-            >
-              {copiedEnv ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-              <span>{copiedEnv ? 'Configuração copiada!' : 'Copiar modelo .env'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Terminal Commands */}
-        <div className="bg-[#0a0c0e] border border-[#1e232b] rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono text-[#828a95]">Comandos no Terminal (VS Code / Bash):</span>
-          </div>
-          <pre className="text-xs font-mono text-[#c99e64] overflow-x-auto bg-[#050608] p-3 rounded-lg border border-[#1e232b]">
-{`# 1. Instalar dependências
-npm install
-
-# 2. Iniciar servidor de desenvolvimento (Porta 3000)
-npm run dev
-
-# 3. Para compilar versão de produção
-npm run build && npm start`}
-          </pre>
         </div>
       </div>
     </div>

@@ -480,22 +480,97 @@ export async function syncSelectionToSupabase(sel: SelectionRecord): Promise<voi
   }
 }
 
+// ==============================================================================
+// SUPABASE STORAGE (BUCKET: portfolio)
+// ==============================================================================
+
+export async function uploadToSupabaseStorage(
+  bucket: string,
+  storagePath: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string | null> {
+  const client = getSupabase();
+  if (!client) return null;
+  try {
+    const { data, error } = await client.storage.from(bucket).upload(storagePath, buffer, {
+      contentType: contentType || 'image/jpeg',
+      upsert: true,
+    });
+    if (error) {
+      console.error(`[Supabase Storage] Erro ao enviar para ${bucket}/${storagePath}:`, error.message);
+      return null;
+    }
+    const { data: publicData } = client.storage.from(bucket).getPublicUrl(storagePath);
+    return publicData?.publicUrl || null;
+  } catch (err: any) {
+    console.error(`[Supabase Storage] Exceção ao enviar para ${bucket}/${storagePath}:`, err.message);
+    return null;
+  }
+}
+
+export async function deleteFromSupabaseStorage(bucket: string, storagePaths: string[]): Promise<void> {
+  const client = getSupabase();
+  if (!client || storagePaths.length === 0) return;
+  try {
+    await client.storage.from(bucket).remove(storagePaths);
+  } catch (err: any) {
+    console.warn(`[Supabase Storage] Erro ao remover arquivos de ${bucket}:`, err.message);
+  }
+}
+
+// ==============================================================================
+// SUPABASE PORTFOLIO CATEGORIES DIRECT CRUD
+// ==============================================================================
+
+export async function fetchCategoriesFromSupabase(): Promise<PortfolioCategory[]> {
+  const client = getSupabase();
+  if (!client) return [];
+  try {
+    const { data, error } = await client
+      .from('portfolio_categories')
+      .select('*')
+      .order('order_num', { ascending: true });
+    if (error) {
+      console.warn('[Supabase] Erro ao consultar portfolio_categories:', error.message);
+      return [];
+    }
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      slug: row.slug,
+      order: row.order_num || 1,
+      active: row.active !== false,
+      description: row.description || '',
+      createdAt: row.created_at,
+    }));
+  } catch (err: any) {
+    console.warn('[Supabase] Falha ao consultar portfolio_categories:', err.message);
+    return [];
+  }
+}
+
 export async function syncCategoryToSupabase(cat: PortfolioCategory): Promise<void> {
   const client = getSupabase();
   if (!client) return;
 
   try {
-    await client.from('portfolio_categories').upsert({
+    const { error } = await client.from('portfolio_categories').upsert({
       id: cat.id,
       name: cat.name,
       slug: cat.slug,
       order_num: cat.order || 1,
       active: cat.active !== false,
       description: cat.description || '',
-      created_at: cat.createdAt,
+      created_at: cat.createdAt || new Date().toISOString(),
     });
+    if (error) {
+      console.error('[Supabase] Erro no upsert de categoria:', error.message);
+      throw error;
+    }
   } catch (err: any) {
-    console.warn('[Supabase] Erro ao sincronizar categoria do portfólio:', err.message);
+    console.error('[Supabase] Erro ao salvar categoria no Supabase:', err.message);
+    throw err;
   }
 }
 
@@ -504,9 +579,99 @@ export async function deleteCategoryFromSupabase(id: string): Promise<void> {
   if (!client) return;
 
   try {
-    await client.from('portfolio_categories').delete().eq('id', id);
+    // Delete any photos belonging to this category first
+    await client.from('portfolio_photos').delete().eq('category_id', id);
+    const { error } = await client.from('portfolio_categories').delete().eq('id', id);
+    if (error) throw error;
   } catch (err: any) {
-    console.warn('[Supabase] Erro ao excluir categoria do portfólio:', err.message);
+    console.error('[Supabase] Erro ao excluir categoria do Supabase:', err.message);
+    throw err;
+  }
+}
+
+export async function reorderCategoriesInSupabase(orderedIds: string[]): Promise<void> {
+  const client = getSupabase();
+  if (!client || orderedIds.length === 0) return;
+  try {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await client
+        .from('portfolio_categories')
+        .update({ order_num: i + 1 })
+        .eq('id', orderedIds[i]);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase] Erro ao reordenar categorias no Supabase:', err.message);
+  }
+}
+
+// ==============================================================================
+// SUPABASE PORTFOLIO PHOTOS DIRECT CRUD
+// ==============================================================================
+
+export async function fetchPortfolioPhotosFromSupabase(params?: {
+  categoryId?: string;
+  activeOnly?: boolean;
+}): Promise<PortfolioPhoto[]> {
+  const client = getSupabase();
+  if (!client) return [];
+  try {
+    let query = client.from('portfolio_photos').select('*').order('order_num', { ascending: true });
+    if (params?.categoryId && params.categoryId !== 'Todos') {
+      query = query.eq('category_id', params.categoryId);
+    }
+    if (params?.activeOnly) {
+      query = query.eq('active', true);
+    }
+    const { data, error } = await query;
+    if (error) {
+      console.warn('[Supabase] Erro ao consultar portfolio_photos:', error.message);
+      return [];
+    }
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      categoryId: row.category_id,
+      categoryName: row.category_name,
+      number: row.number,
+      order: row.order_num || 1,
+      imageUrl: row.image_url,
+      thumbnailUrl: row.thumbnail_url || row.image_url,
+      title: row.title || `${row.category_name} #${row.number}`,
+      description: row.description || '',
+      aspect: row.aspect || 'portrait',
+      active: row.active !== false,
+      featured: Boolean(row.featured),
+      createdAt: row.created_at,
+    }));
+  } catch (err: any) {
+    console.warn('[Supabase] Falha ao consultar portfolio_photos:', err.message);
+    return [];
+  }
+}
+
+export async function savePortfolioPhotoToSupabase(p: PortfolioPhoto): Promise<void> {
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    const { error } = await client.from('portfolio_photos').upsert({
+      id: p.id,
+      category_id: p.categoryId,
+      category_name: p.categoryName,
+      number: p.number,
+      order_num: p.order || 1,
+      image_url: p.imageUrl,
+      thumbnail_url: p.thumbnailUrl || p.imageUrl,
+      title: p.title || `${p.categoryName} #${p.number}`,
+      description: p.description || '',
+      aspect: p.aspect || 'portrait',
+      active: p.active !== false,
+      featured: Boolean(p.featured),
+      created_at: p.createdAt || new Date().toISOString(),
+    });
+    if (error) throw error;
+  } catch (err: any) {
+    console.error('[Supabase] Erro ao salvar foto no Supabase:', err.message);
+    throw err;
   }
 }
 
@@ -523,12 +688,12 @@ export async function syncPortfolioPhotosToSupabase(photosList: PortfolioPhoto[]
       order_num: p.order || 1,
       image_url: p.imageUrl,
       thumbnail_url: p.thumbnailUrl || p.imageUrl,
-      title: p.title,
+      title: p.title || `${p.categoryName} #${p.number}`,
       description: p.description || '',
       aspect: p.aspect || 'portrait',
       active: p.active !== false,
       featured: Boolean(p.featured),
-      created_at: p.createdAt,
+      created_at: p.createdAt || new Date().toISOString(),
     }));
 
     // Upsert in batches of 50 to prevent packet size limits
@@ -539,7 +704,8 @@ export async function syncPortfolioPhotosToSupabase(photosList: PortfolioPhoto[]
       if (error) throw error;
     }
   } catch (err: any) {
-    console.warn('[Supabase] Erro ao sincronizar fotos do portfólio:', err.message);
+    console.error('[Supabase] Erro ao sincronizar fotos do portfólio:', err.message);
+    throw err;
   }
 }
 
@@ -548,9 +714,24 @@ export async function deletePortfolioPhotoFromSupabase(id: string): Promise<void
   if (!client) return;
 
   try {
-    await client.from('portfolio_photos').delete().eq('id', id);
+    const { error } = await client.from('portfolio_photos').delete().eq('id', id);
+    if (error) throw error;
   } catch (err: any) {
-    console.warn('[Supabase] Erro ao excluir foto do portfólio:', err.message);
+    console.error('[Supabase] Erro ao excluir foto do portfólio no Supabase:', err.message);
+    throw err;
+  }
+}
+
+export async function deleteBatchPortfolioPhotosFromSupabase(ids: string[]): Promise<void> {
+  const client = getSupabase();
+  if (!client || ids.length === 0) return;
+
+  try {
+    const { error } = await client.from('portfolio_photos').delete().in('id', ids);
+    if (error) throw error;
+  } catch (err: any) {
+    console.error('[Supabase] Erro ao excluir lote de fotos no Supabase:', err.message);
+    throw err;
   }
 }
 

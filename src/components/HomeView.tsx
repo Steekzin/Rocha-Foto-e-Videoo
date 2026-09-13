@@ -213,20 +213,21 @@ export const HomeView: React.FC<HomeViewProps> = ({ setActiveTab }) => {
             </div>
           </div>
 
-          {/* Right Column: Debutante / 15 Anos Photo with Tiara & Glow */}
-          <div className="relative h-[440px] md:h-[600px] overflow-hidden group order-1 md:order-2">
+          {/* Right Column: Studio Fachada Rocha Foto & Vídeo (R. Juca Prates, 610) */}
+          <div className="relative h-[440px] md:h-[600px] overflow-hidden group order-1 md:order-2 rounded-2xl border border-black/10 dark:border-white/10 shadow-lg">
             <img
-              src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=85"
-              alt="Ensaio 15 Anos e Book Debutante Studio Rocha"
+              src="/rocha_fachada.jpg"
+              alt="Fachada Rocha Foto & Vídeo - Studio R. Juca Prates, 610 Centro"
+              referrerPolicy="no-referrer"
               className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700"
             />
             <div className={`absolute inset-0 ${
               theme === 'dark'
-                ? 'bg-gradient-to-t from-black/60 via-transparent to-transparent'
-                : 'bg-gradient-to-t from-black/30 via-transparent to-transparent'
+                ? 'bg-gradient-to-t from-black/70 via-transparent to-transparent'
+                : 'bg-gradient-to-t from-black/40 via-transparent to-transparent'
             }`} />
-            <div className="absolute bottom-6 right-6 text-white text-xs uppercase tracking-widest drop-shadow-md">
-              Montes Claros • MG
+            <div className="absolute bottom-6 right-6 text-white text-xs uppercase tracking-widest drop-shadow-md font-medium">
+              R. Juca Prates, 610 • Montes Claros • MG
             </div>
           </div>
         </div>

@@ -51,8 +51,15 @@ import {
   syncSelectionToSupabase,
   syncCategoryToSupabase,
   deleteCategoryFromSupabase,
+  reorderCategoriesInSupabase,
+  fetchCategoriesFromSupabase,
+  fetchPortfolioPhotosFromSupabase,
+  savePortfolioPhotoToSupabase,
   syncPortfolioPhotosToSupabase,
   deletePortfolioPhotoFromSupabase,
+  deleteBatchPortfolioPhotosFromSupabase,
+  uploadToSupabaseStorage,
+  deleteFromSupabaseStorage,
   migrateLocalDatabaseToSupabase,
 } from './server/supabase.ts';
 
@@ -248,13 +255,6 @@ function saveDatabase() {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
   } catch (err) {
     console.error('Error saving database to disk:', err);
-  }
-
-  // If Supabase is active, persist changes to cloud database asynchronously
-  if (isSupabaseConfigured()) {
-    migrateLocalDatabaseToSupabase(db).catch((err: any) => {
-      console.warn('[Supabase AutoSync] Aviso na sincronização com a nuvem:', err.message);
-    });
   }
 }
 
@@ -855,6 +855,13 @@ async function setupRoutes() {
     db.selections.unshift(newSelection);
     saveDatabase();
 
+    // Sync to Supabase in background
+    if (isSupabaseConfigured()) {
+      syncSelectionToSupabase(newSelection).catch((e: any) =>
+        console.warn('[Supabase] Erro ao sincronizar seleção:', e.message)
+      );
+    }
+
     // Prepare organized WhatsApp message format as required by Prompt Section 15
     const photoNumbersStr = selectedPhotos.map((p: { number: string }) => p.number).join(', ');
     const formattedPrice =
@@ -880,7 +887,7 @@ async function setupRoutes() {
     ].join('\n');
 
     const encodedMessage = encodeURIComponent(whatsappMessage);
-    const studioWhatsApp = '5511999999999'; // número padrão Rocha Foto & Vídeo
+    const studioWhatsApp = '553891065054'; // Rocha Foto & Vídeo oficial WhatsApp (+55 38 9106-5054)
     const whatsappUrl = `https://wa.me/${studioWhatsApp}?text=${encodedMessage}`;
 
     res.status(201).json({
@@ -1144,9 +1151,20 @@ async function setupRoutes() {
   // ==========================================
 
   // Get Categories (Public: active only, Admin: all with includeInactive=true)
-  app.get('/api/portfolio/categories', (req: Request, res: Response) => {
+  app.get('/api/portfolio/categories', async (req: Request, res: Response) => {
     try {
       const includeInactive = req.query.includeInactive === 'true';
+
+      if (isSupabaseConfigured()) {
+        try {
+          const sbCategories = await fetchCategoriesFromSupabase();
+          if (sbCategories && sbCategories.length > 0) {
+            db.portfolioCategories = sbCategories;
+          }
+        } catch (sbErr: any) {
+          console.warn('[Supabase Categories Sync Warning]:', sbErr.message);
+        }
+      }
 
       const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
         ? db.portfolioCategories
@@ -1166,7 +1184,11 @@ async function setupRoutes() {
       // Attach real-time photoCount for each category
       const categoriesWithCount = categories.map((cat) => {
         const count = photoList.filter(
-          (p) => p && (String(p.categoryId) === String(cat.id) || (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())) && (includeInactive || p.active)
+          (p) =>
+            p &&
+            (String(p.categoryId) === String(cat.id) ||
+              (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())) &&
+            (includeInactive || p.active)
         ).length;
         return {
           ...cat,
@@ -1174,157 +1196,218 @@ async function setupRoutes() {
         };
       });
 
-      res.json(categoriesWithCount);
+      return res.json(categoriesWithCount);
     } catch (err: any) {
       console.error('[Portfolio Categories Error]:', err);
-      res.json(INITIAL_PORTFOLIO_CATEGORIES);
+      return res.json(INITIAL_PORTFOLIO_CATEGORIES);
     }
   });
 
   // Create Category (Admin Only)
-  app.post('/api/admin/portfolio/categories', requireAdmin, (req: Request, res: Response) => {
-    const { name, description, active, order } = req.body;
-    if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'O nome da categoria é obrigatório.' });
+  app.post('/api/admin/portfolio/categories', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { name, description, active, order } = req.body;
+      if (!name || !name.trim()) {
+        return res.status(400).json({ error: 'O nome da categoria é obrigatório.' });
+      }
+
+      const trimmedName = name.trim();
+      const existing = db.portfolioCategories.find(
+        (c) => c.name.toLowerCase() === trimmedName.toLowerCase()
+      );
+      if (existing) {
+        return res.status(400).json({ error: 'Já existe uma categoria com este nome.' });
+      }
+
+      const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+      const newCategory: PortfolioCategory = {
+        id: `cat-${toSlug(trimmedName)}-${Date.now().toString(36)}`,
+        name: trimmedName,
+        slug: toSlug(trimmedName),
+        order: typeof order === 'number' ? order : maxOrder + 1,
+        active: active !== false,
+        description: description ? description.trim() : '',
+        createdAt: new Date().toISOString(),
+      };
+
+      if (isSupabaseConfigured()) {
+        try {
+          await syncCategoryToSupabase(newCategory);
+        } catch (sbErr: any) {
+          console.error('[Supabase Category Create Error]:', sbErr.message);
+        }
+      }
+
+      db.portfolioCategories.push(newCategory);
+      saveDatabase();
+
+      return res.status(201).json(newCategory);
+    } catch (err: any) {
+      console.error('[Create Category Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao criar categoria' });
     }
-
-    const trimmedName = name.trim();
-    const existing = db.portfolioCategories.find(
-      (c) => c.name.toLowerCase() === trimmedName.toLowerCase()
-    );
-    if (existing) {
-      return res.status(400).json({ error: 'Já existe uma categoria com este nome.' });
-    }
-
-    const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
-    const newCategory: PortfolioCategory = {
-      id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: trimmedName,
-      slug: toSlug(trimmedName),
-      order: typeof order === 'number' ? order : maxOrder + 1,
-      active: active !== false,
-      description: description ? description.trim() : '',
-      createdAt: new Date().toISOString(),
-    };
-
-    db.portfolioCategories.push(newCategory);
-    saveDatabase();
-
-    res.status(201).json(newCategory);
   });
 
   // Update Category (Admin Only) - Cascades rename to all associated photos
-  app.put('/api/admin/portfolio/categories/:id', requireAdmin, (req: Request, res: Response) => {
-    const { id } = req.params;
-    const catIndex = db.portfolioCategories.findIndex((c) => c.id === id);
-    if (catIndex === -1) {
-      return res.status(404).json({ error: 'Categoria não encontrada.' });
-    }
-
-    const currentCat = db.portfolioCategories[catIndex];
-    const { name, description, active, order } = req.body;
-
-    let newName = currentCat.name;
-    let newSlug = currentCat.slug;
-
-    if (name && name.trim()) {
-      const trimmedName = name.trim();
-      // Check if duplicate with another category
-      const duplicate = db.portfolioCategories.find(
-        (c) => c.id !== id && c.name.toLowerCase() === trimmedName.toLowerCase()
-      );
-      if (duplicate) {
-        return res.status(400).json({ error: 'Já existe outra categoria com este nome.' });
+  app.put('/api/admin/portfolio/categories/:id', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const catIndex = db.portfolioCategories.findIndex((c) => c.id === id);
+      if (catIndex === -1) {
+        return res.status(404).json({ error: 'Categoria não encontrada.' });
       }
-      newName = trimmedName;
-      newSlug = toSlug(trimmedName);
 
-      // Cascade update to all photos belonging to this category
-      db.portfolioPhotos.forEach((photo) => {
-        if (photo.categoryId === id) {
-          photo.categoryName = newName;
+      const currentCat = db.portfolioCategories[catIndex];
+      const { name, description, active, order } = req.body;
+
+      let newName = currentCat.name;
+      let newSlug = currentCat.slug;
+
+      if (name && name.trim()) {
+        const trimmedName = name.trim();
+        // Check if duplicate with another category
+        const duplicate = db.portfolioCategories.find(
+          (c) => c.id !== id && c.name.toLowerCase() === trimmedName.toLowerCase()
+        );
+        if (duplicate) {
+          return res.status(400).json({ error: 'Já existe outra categoria com este nome.' });
         }
-      });
+        newName = trimmedName;
+        newSlug = toSlug(trimmedName);
+
+        // Cascade update to all photos belonging to this category
+        db.portfolioPhotos.forEach((photo) => {
+          if (photo.categoryId === id) {
+            photo.categoryName = newName;
+          }
+        });
+      }
+
+      const updatedCategory: PortfolioCategory = {
+        ...currentCat,
+        name: newName,
+        slug: newSlug,
+        description: description !== undefined ? (description || '').trim() : currentCat.description,
+        active: active !== undefined ? Boolean(active) : currentCat.active,
+        order: typeof order === 'number' ? order : currentCat.order,
+      };
+
+      db.portfolioCategories[catIndex] = updatedCategory;
+
+      if (isSupabaseConfigured()) {
+        try {
+          await syncCategoryToSupabase(updatedCategory);
+        } catch (sbErr: any) {
+          console.error('[Supabase Category Update Error]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json(updatedCategory);
+    } catch (err: any) {
+      console.error('[Update Category Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao atualizar categoria' });
     }
-
-    db.portfolioCategories[catIndex] = {
-      ...currentCat,
-      name: newName,
-      slug: newSlug,
-      description: description !== undefined ? (description || '').trim() : currentCat.description,
-      active: active !== undefined ? Boolean(active) : currentCat.active,
-      order: typeof order === 'number' ? order : currentCat.order,
-    };
-
-    syncPortfolioLegacy();
-    saveDatabase();
-
-    res.json(db.portfolioCategories[catIndex]);
   });
 
   // Delete Category (Admin Only)
-  app.delete('/api/admin/portfolio/categories/:id', requireAdmin, (req: Request, res: Response) => {
-    const { id } = req.params;
-    const cat = db.portfolioCategories.find((c) => c.id === id);
-    if (!cat) {
-      return res.status(404).json({ error: 'Categoria não encontrada.' });
-    }
+  app.delete('/api/admin/portfolio/categories/:id', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const cat = db.portfolioCategories.find((c) => c.id === id);
+      if (!cat) {
+        return res.status(404).json({ error: 'Categoria não encontrada.' });
+      }
 
-    // Delete photos belonging to this category and clean physical files
-    const photosToDelete = db.portfolioPhotos.filter(
-      (p) => String(p.categoryId) === String(id) || (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())
-    );
-    photosToDelete.forEach((photo) => {
-      if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
+      if (isSupabaseConfigured()) {
         try {
-          const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
-          const physicalPath = path.join(PORTFOLIO_DIR, decoded);
-          if (fs.existsSync(physicalPath)) {
-            fs.unlinkSync(physicalPath);
-          }
-        } catch (err) {
-          console.error('Error removing photo file during category deletion:', err);
+          await deleteCategoryFromSupabase(id);
+        } catch (sbErr: any) {
+          console.error('[Supabase Category Delete Error]:', sbErr.message);
         }
       }
-    });
 
-    db.portfolioPhotos = db.portfolioPhotos.filter(
-      (p) => String(p.categoryId) !== String(id) && (!p.categoryName || p.categoryName.toLowerCase() !== cat.name.toLowerCase())
-    );
-    if (db.portfolio) {
-      db.portfolio = db.portfolio.filter(
-        (p) => String(p.categoryId) !== String(id) && (!p.category || p.category.toLowerCase() !== cat.name.toLowerCase())
+      // Delete photos belonging to this category and clean physical files
+      const photosToDelete = db.portfolioPhotos.filter(
+        (p) =>
+          String(p.categoryId) === String(id) ||
+          (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())
       );
+      photosToDelete.forEach((photo) => {
+        if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
+          try {
+            const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
+            const physicalPath = path.join(PORTFOLIO_DIR, decoded);
+            if (fs.existsSync(physicalPath)) {
+              fs.unlinkSync(physicalPath);
+            }
+          } catch (err) {
+            console.error('Error removing photo file during category deletion:', err);
+          }
+        }
+      });
+
+      db.portfolioPhotos = db.portfolioPhotos.filter(
+        (p) =>
+          String(p.categoryId) !== String(id) &&
+          (!p.categoryName || p.categoryName.toLowerCase() !== cat.name.toLowerCase())
+      );
+      if (db.portfolio) {
+        db.portfolio = db.portfolio.filter(
+          (p) =>
+            String(p.categoryId) !== String(id) &&
+            (!p.category || p.category.toLowerCase() !== cat.name.toLowerCase())
+        );
+      }
+      db.portfolioCategories = db.portfolioCategories.filter((c) => String(c.id) !== String(id));
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        message: `Categoria "${cat.name}" e suas ${photosToDelete.length} fotos foram excluídas com sucesso.`,
+      });
+    } catch (err: any) {
+      console.error('[Delete Category Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao excluir categoria' });
     }
-    db.portfolioCategories = db.portfolioCategories.filter((c) => String(c.id) !== String(id));
-
-    syncPortfolioLegacy();
-    saveDatabase();
-
-    res.json({
-      success: true,
-      message: `Categoria "${cat.name}" e suas ${photosToDelete.length} fotos foram excluídas com sucesso.`,
-    });
   });
 
   // Reorder Categories (Admin Only)
-  app.post('/api/admin/portfolio/categories/reorder', requireAdmin, (req: Request, res: Response) => {
-    const { categoryIds } = req.body;
-    if (!Array.isArray(categoryIds)) {
-      return res.status(400).json({ error: 'categoryIds deve ser uma lista de IDs.' });
-    }
-
-    categoryIds.forEach((catId, index) => {
-      const cat = db.portfolioCategories.find((c) => c.id === catId);
-      if (cat) {
-        cat.order = index + 1;
+  app.post('/api/admin/portfolio/categories/reorder', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { categoryIds } = req.body;
+      if (!Array.isArray(categoryIds)) {
+        return res.status(400).json({ error: 'categoryIds deve ser uma lista de IDs.' });
       }
-    });
 
-    db.portfolioCategories.sort((a, b) => a.order - b.order);
-    saveDatabase();
+      categoryIds.forEach((catId, index) => {
+        const cat = db.portfolioCategories.find((c) => c.id === catId);
+        if (cat) {
+          cat.order = index + 1;
+        }
+      });
 
-    res.json({ success: true, categories: db.portfolioCategories });
+      db.portfolioCategories.sort((a, b) => a.order - b.order);
+
+      if (isSupabaseConfigured()) {
+        try {
+          await reorderCategoriesInSupabase(categoryIds);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Category Reorder Warning]:', sbErr.message);
+        }
+      }
+
+      saveDatabase();
+
+      return res.json({ success: true, categories: db.portfolioCategories });
+    } catch (err: any) {
+      console.error('[Reorder Categories Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao reordenar categorias' });
+    }
   });
 
   // ==========================================
@@ -1345,9 +1428,20 @@ async function setupRoutes() {
   }
 
   // Public & General Portfolio API (Only active photos from active categories)
-  app.get('/api/portfolio', (req: Request, res: Response) => {
+  app.get('/api/portfolio', async (req: Request, res: Response) => {
     try {
       const { category, categoryId } = req.query;
+
+      if (isSupabaseConfigured() && (!db.portfolioPhotos || db.portfolioPhotos.length === 0)) {
+        try {
+          const sbPhotos = await fetchPortfolioPhotosFromSupabase();
+          if (sbPhotos && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
+          }
+        } catch (e: any) {
+          console.warn('[Supabase Public Portfolio Photos Warning]:', e.message);
+        }
+      }
 
       const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
         ? db.portfolioCategories
@@ -1366,7 +1460,11 @@ async function setupRoutes() {
       );
 
       let photos = photoList.filter(
-        (p) => p && p.active && (activeCategoryIds.has(p.categoryId) || activeCategoryNames.has((p.categoryName || '').toLowerCase()))
+        (p) =>
+          p &&
+          p.active &&
+          (activeCategoryIds.has(p.categoryId) ||
+            activeCategoryNames.has((p.categoryName || '').toLowerCase()))
       );
 
       if (categoryId && categoryId !== 'Todos') {
@@ -1400,17 +1498,28 @@ async function setupRoutes() {
         caption: p.description || (p as any).caption || '',
       }));
 
-      res.json(normalized);
+      return res.json(normalized);
     } catch (err: any) {
       console.error('[Portfolio Photos Public Error]:', err);
-      res.json(INITIAL_PORTFOLIO_PHOTOS);
+      return res.json(INITIAL_PORTFOLIO_PHOTOS);
     }
   });
 
   // Admin Get All Portfolio Photos (Admin Only - with filters & search)
-  app.get('/api/admin/portfolio/photos', requireAdmin, (req: Request, res: Response) => {
+  app.get('/api/admin/portfolio/photos', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { categoryId, category, status, search } = req.query;
+
+      if (isSupabaseConfigured() && (!db.portfolioPhotos || db.portfolioPhotos.length === 0)) {
+        try {
+          const sbPhotos = await fetchPortfolioPhotosFromSupabase();
+          if (sbPhotos && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
+          }
+        } catch (e: any) {
+          console.warn('[Supabase Admin Portfolio Photos Warning]:', e.message);
+        }
+      }
 
       const photoList = Array.isArray(db.portfolioPhotos) && db.portfolioPhotos.length > 0
         ? db.portfolioPhotos
@@ -1471,192 +1580,251 @@ async function setupRoutes() {
         caption: p.description || (p as any).caption || '',
       }));
 
-      res.json(normalized);
+      return res.json(normalized);
     } catch (err: any) {
       console.error('[Portfolio Photos Admin Error]:', err);
-      res.json(INITIAL_PORTFOLIO_PHOTOS);
+      return res.json(INITIAL_PORTFOLIO_PHOTOS);
     }
   });
 
   // Multi-Photo Upload to Portfolio (Admin Only)
-  // Preserves original photo quality, saves directly to disk, assigns automatic visual numbers (001, 002...)
+  // Preserves original photo quality, uploads to Supabase Storage, assigns automatic visual numbers (001, 002...)
   app.post(
     '/api/admin/portfolio/photos/upload',
     requireAdmin,
     upload.array('files', 100),
-    (req: Request, res: Response) => {
-      const files = req.files as Express.Multer.File[];
-      if (!files || files.length === 0) {
-        return res.status(400).json({ error: 'Nenhuma fotografia enviada.' });
-      }
+    async (req: Request, res: Response) => {
+      try {
+        const files = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) {
+          return res.status(400).json({ error: 'Nenhuma fotografia enviada.' });
+        }
 
-      const categoryIdentifier = req.body.categoryId || req.body.category;
-      if (!categoryIdentifier) {
-        return res.status(400).json({ error: 'Selecione uma categoria para as fotos.' });
-      }
+        const categoryIdentifier = req.body.categoryId || req.body.category;
+        if (!categoryIdentifier) {
+          return res.status(400).json({ error: 'Selecione uma categoria para as fotos.' });
+        }
 
-      // Find category by ID or Name
-      let category = db.portfolioCategories.find(
-        (c) =>
-          c.id === categoryIdentifier ||
-          c.name.toLowerCase() === String(categoryIdentifier).toLowerCase()
-      );
+        // Find category by ID or Name
+        let category = db.portfolioCategories.find(
+          (c) =>
+            c.id === categoryIdentifier ||
+            c.name.toLowerCase() === String(categoryIdentifier).toLowerCase()
+        );
 
-      // Auto-create category if missing
-      if (!category) {
-        const catName = String(categoryIdentifier).trim();
-        const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
-        category = {
-          id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
-          name: catName,
-          slug: toSlug(catName),
-          order: maxOrder + 1,
-          active: true,
-          createdAt: new Date().toISOString(),
-        };
-        db.portfolioCategories.push(category);
-      }
-
-      const safeCategoryFolder = category.name.replace(/[/\\?%*:|"<>]/g, '-').trim();
-      const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-
-      // Calculate base sequential number and order
-      const photosInCat = db.portfolioPhotos.filter((p) => p.categoryId === category.id);
-      let highestNum = 0;
-      let highestOrder = 0;
-      photosInCat.forEach((p) => {
-        const n = parseInt(p.number, 10);
-        if (!isNaN(n) && n > highestNum) highestNum = n;
-        if ((p.order || 0) > highestOrder) highestOrder = p.order;
-      });
-
-      const uploadedPhotos: PortfolioPhoto[] = [];
-      const userDesc = (req.body.description || '').trim();
-
-      files.forEach((file, idx) => {
-        const rawFileName = path.basename(file.originalname);
-        const safeFileName = `${Date.now()}_${idx}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-        let imageUrl = '';
-
-        try {
-          if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
+        // Auto-create category if missing
+        if (!category) {
+          const catName = String(categoryIdentifier).trim();
+          const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+          category = {
+            id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+            name: catName,
+            slug: toSlug(catName),
+            order: maxOrder + 1,
+            active: true,
+            createdAt: new Date().toISOString(),
+          };
+          db.portfolioCategories.push(category);
+          if (isSupabaseConfigured()) {
+            await syncCategoryToSupabase(category).catch((e: any) =>
+              console.warn('[Supabase AutoCat Error]:', e.message)
+            );
           }
-          const targetFilePath = path.join(targetDir, safeFileName);
-          fs.writeFileSync(targetFilePath, file.buffer);
-          imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
-        } catch (diskErr: any) {
-          console.warn('Physical disk write skipped (read-only filesystem, e.g. Vercel):', diskErr.message);
         }
 
-        if (!imageUrl) {
-          const mimeType = file.mimetype || 'image/jpeg';
-          imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+        const safeCategoryFolder = category.name.replace(/[/\\?%*:|"<>]/g, '-').trim();
+        const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
+
+        // Calculate base sequential number and order
+        const photosInCat = db.portfolioPhotos.filter((p) => p.categoryId === category!.id);
+        let highestNum = 0;
+        let highestOrder = 0;
+        photosInCat.forEach((p) => {
+          const n = parseInt(p.number, 10);
+          if (!isNaN(n) && n > highestNum) highestNum = n;
+          if ((p.order || 0) > highestOrder) highestOrder = p.order;
+        });
+
+        const uploadedPhotos: PortfolioPhoto[] = [];
+        const categorySlug = toSlug(category.name);
+
+        for (let idx = 0; idx < files.length; idx++) {
+          const file = files[idx];
+          const rawFileName = path.basename(file.originalname);
+          const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase();
+          const photoId = `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
+          let imageUrl = '';
+
+          // 1. Upload to Supabase Storage (Bucket: portfolio)
+          if (isSupabaseConfigured()) {
+            const storagePath = `${categorySlug}/${Date.now()}_${idx}_${photoId}.${ext}`;
+            const publicUrl = await uploadToSupabaseStorage(
+              'portfolio',
+              storagePath,
+              file.buffer,
+              file.mimetype || 'image/jpeg'
+            );
+            if (publicUrl) {
+              imageUrl = publicUrl;
+            }
+          }
+
+          // 2. Fallback to physical disk
+          if (!imageUrl) {
+            try {
+              if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+              }
+              const safeFileName = `${Date.now()}_${idx}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
+              const targetFilePath = path.join(targetDir, safeFileName);
+              fs.writeFileSync(targetFilePath, file.buffer);
+              imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+            } catch (diskErr: any) {
+              console.warn('Physical disk write skipped:', diskErr.message);
+            }
+          }
+
+          // 3. Fallback to base64
+          if (!imageUrl) {
+            const mimeType = file.mimetype || 'image/jpeg';
+            imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+          }
+
+          const currentSeq = highestNum + idx + 1;
+          const formattedNumber = formatPhotoNumber(currentSeq);
+          const autoTitle = `${category.name} #${formattedNumber}`;
+          const autoDesc = `${category.name} — Fotografia original Rocha Foto & Vídeo`;
+
+          const newPhoto: PortfolioPhoto = {
+            id: photoId,
+            categoryId: category.id,
+            categoryName: category.name,
+            number: formattedNumber,
+            order: highestOrder + idx + 1,
+            imageUrl,
+            thumbnailUrl: imageUrl,
+            title: req.body.title && req.body.title.trim() ? req.body.title.trim() : autoTitle,
+            description: req.body.description && req.body.description.trim() ? req.body.description.trim() : autoDesc,
+            aspect: 'portrait',
+            active: req.body.active !== 'false' && req.body.active !== false,
+            featured: false,
+            createdAt: new Date().toISOString(),
+          };
+
+          uploadedPhotos.push(newPhoto);
+          db.portfolioPhotos.push(newPhoto);
         }
 
-        const currentSeq = highestNum + idx + 1;
-        const formattedNumber = formatPhotoNumber(currentSeq);
-        const itemTitle = cleanTitle(rawFileName) || `${category.name} ${formattedNumber}`;
+        // Persist to Supabase Database
+        if (isSupabaseConfigured() && uploadedPhotos.length > 0) {
+          try {
+            await syncPortfolioPhotosToSupabase(uploadedPhotos);
+          } catch (sbErr: any) {
+            console.error('[Supabase Photo Upload Sync Error]:', sbErr.message);
+          }
+        }
 
-        const newPhoto: PortfolioPhoto = {
-          id: `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
-          categoryId: category.id,
-          categoryName: category.name,
-          number: formattedNumber,
-          order: highestOrder + idx + 1,
-          imageUrl,
-          title: itemTitle,
-          description: userDesc || `${category.name} — Fotografia original Rocha Foto & Vídeo`,
-          aspect: 'portrait',
-          active: true,
-          featured: false,
-          createdAt: new Date().toISOString(),
-        };
+        syncPortfolioLegacy();
+        saveDatabase();
 
-        uploadedPhotos.push(newPhoto);
-        db.portfolioPhotos.push(newPhoto);
-      });
-
-      syncPortfolioLegacy();
-      saveDatabase();
-
-      res.status(201).json({
-        success: true,
-        count: uploadedPhotos.length,
-        photos: uploadedPhotos,
-        category: category.name,
-      });
+        return res.status(201).json({
+          success: true,
+          count: uploadedPhotos.length,
+          photos: uploadedPhotos,
+          category: category.name,
+        });
+      } catch (err: any) {
+        console.error('[Photo Upload Error]:', err);
+        return res.status(500).json({ error: err.message || 'Erro ao realizar upload das fotografias' });
+      }
     }
   );
 
   // Update Portfolio Photo (Admin Only) - can change category, description, order, status, number
-  app.put('/api/admin/portfolio/photos/:id', requireAdmin, (req: Request, res: Response) => {
-    const { id } = req.params;
-    const photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
-    if (photoIndex === -1) {
-      return res.status(404).json({ error: 'Fotografia não encontrada.' });
-    }
-
-    const currentPhoto = db.portfolioPhotos[photoIndex];
-    const { categoryId, category, categoryName, title, description, order, active, featured, number } = req.body;
-
-    let targetCatId = currentPhoto.categoryId;
-    let targetCatName = currentPhoto.categoryName;
-
-    const requestedCategory = categoryId || category || categoryName;
-    if (requestedCategory && (requestedCategory !== currentPhoto.categoryId || requestedCategory !== currentPhoto.categoryName)) {
-      const cat = db.portfolioCategories.find(
-        (c) =>
-          c.id === requestedCategory ||
-          c.name.toLowerCase() === String(requestedCategory).toLowerCase() ||
-          toSlug(c.name) === toSlug(String(requestedCategory))
-      );
-      if (cat) {
-        targetCatId = cat.id;
-        targetCatName = cat.name;
-      } else if (String(requestedCategory).trim()) {
-        const catName = String(requestedCategory).trim();
-        const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
-        const newCat: PortfolioCategory = {
-          id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
-          name: catName,
-          slug: toSlug(catName),
-          order: maxOrder + 1,
-          active: true,
-          createdAt: new Date().toISOString(),
-        };
-        db.portfolioCategories.push(newCat);
-        targetCatId = newCat.id;
-        targetCatName = newCat.name;
+  app.put('/api/admin/portfolio/photos/:id', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
+      if (photoIndex === -1) {
+        return res.status(404).json({ error: 'Fotografia não encontrada.' });
       }
+
+      const currentPhoto = db.portfolioPhotos[photoIndex];
+      const { categoryId, category, categoryName, title, description, order, active, featured, number } = req.body;
+
+      let targetCatId = currentPhoto.categoryId;
+      let targetCatName = currentPhoto.categoryName;
+
+      const requestedCategory = categoryId || category || categoryName;
+      if (requestedCategory && (requestedCategory !== currentPhoto.categoryId || requestedCategory !== currentPhoto.categoryName)) {
+        const cat = db.portfolioCategories.find(
+          (c) =>
+            c.id === requestedCategory ||
+            c.name.toLowerCase() === String(requestedCategory).toLowerCase() ||
+            toSlug(c.name) === toSlug(String(requestedCategory))
+        );
+        if (cat) {
+          targetCatId = cat.id;
+          targetCatName = cat.name;
+        } else if (String(requestedCategory).trim()) {
+          const catName = String(requestedCategory).trim();
+          const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+          const newCat: PortfolioCategory = {
+            id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+            name: catName,
+            slug: toSlug(catName),
+            order: maxOrder + 1,
+            active: true,
+            createdAt: new Date().toISOString(),
+          };
+          db.portfolioCategories.push(newCat);
+          targetCatId = newCat.id;
+          targetCatName = newCat.name;
+          if (isSupabaseConfigured()) {
+            await syncCategoryToSupabase(newCat).catch((e: any) =>
+              console.warn('[Supabase AutoCat Error]:', e.message)
+            );
+          }
+        }
+      }
+
+      const updatedPhoto: PortfolioPhoto = {
+        ...currentPhoto,
+        categoryId: targetCatId,
+        categoryName: targetCatName,
+        title: title !== undefined ? title.trim() : currentPhoto.title,
+        description: description !== undefined ? description.trim() : currentPhoto.description,
+        number: number !== undefined && String(number).trim() ? String(number).trim() : currentPhoto.number,
+        order: typeof order === 'number' ? order : currentPhoto.order,
+        active: active !== undefined ? Boolean(active) : currentPhoto.active,
+        featured: featured !== undefined ? Boolean(featured) : currentPhoto.featured,
+      };
+
+      db.portfolioPhotos[photoIndex] = updatedPhoto;
+
+      if (isSupabaseConfigured()) {
+        try {
+          await savePortfolioPhotoToSupabase(updatedPhoto);
+        } catch (sbErr: any) {
+          console.error('[Supabase Photo Update Error]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      const normalized = {
+        ...updatedPhoto,
+        category: targetCatName,
+        categoryName: targetCatName,
+        caption: updatedPhoto.description || '',
+      };
+
+      return res.json(normalized);
+    } catch (err: any) {
+      console.error('[Update Photo Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao atualizar fotografia' });
     }
-
-    db.portfolioPhotos[photoIndex] = {
-      ...currentPhoto,
-      categoryId: targetCatId,
-      categoryName: targetCatName,
-      title: title !== undefined ? title.trim() : currentPhoto.title,
-      description: description !== undefined ? description.trim() : currentPhoto.description,
-      number: number !== undefined && String(number).trim() ? String(number).trim() : currentPhoto.number,
-      order: typeof order === 'number' ? order : currentPhoto.order,
-      active: active !== undefined ? Boolean(active) : currentPhoto.active,
-      featured: featured !== undefined ? Boolean(featured) : currentPhoto.featured,
-    };
-
-    syncPortfolioLegacy();
-    saveDatabase();
-
-    const normalized = {
-      ...db.portfolioPhotos[photoIndex],
-      category: targetCatName,
-      categoryName: targetCatName,
-      caption: db.portfolioPhotos[photoIndex].description || '',
-    };
-
-    res.json(normalized);
   });
 
   // Replace Single Photo File (Admin Only) - Preserves ID, category, sequential number, order
@@ -1664,270 +1832,359 @@ async function setupRoutes() {
     '/api/admin/portfolio/photos/:id/replace',
     requireAdmin,
     upload.single('file'),
-    (req: Request, res: Response) => {
-      const { id } = req.params;
-      const photoIndex = db.portfolioPhotos.findIndex((p) => p.id === id);
-      if (photoIndex === -1) {
-        return res.status(404).json({ error: 'Fotografia não encontrada.' });
-      }
-
-      if (!req.file || !req.file.buffer) {
-        return res.status(400).json({ error: 'Nenhum novo arquivo enviado.' });
-      }
-
-      const photo = db.portfolioPhotos[photoIndex];
-      const category = db.portfolioCategories.find((c) => c.id === photo.categoryId);
-      const safeCategoryFolder = (category ? category.name : photo.categoryName)
-        .replace(/[/\\?%*:|"<>]/g, '-')
-        .trim();
-      const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-
-      // Unlink previous file if physical
-      if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
-        try {
-          const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
-          const oldPath = path.join(PORTFOLIO_DIR, decoded);
-          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-        } catch (e) {
-          console.error('Error removing replaced file:', e);
-        }
-      }
-
-      const rawFileName = path.basename(req.file.originalname);
-      const safeFileName = `${Date.now()}_replaced_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-      let newImageUrl = '';
-
+    async (req: Request, res: Response) => {
       try {
-        if (!fs.existsSync(targetDir)) {
-          fs.mkdirSync(targetDir, { recursive: true });
+        const { id } = req.params;
+        const photoIndex = db.portfolioPhotos.findIndex((p) => p.id === id);
+        if (photoIndex === -1) {
+          return res.status(404).json({ error: 'Fotografia não encontrada.' });
         }
-        const targetFilePath = path.join(targetDir, safeFileName);
-        fs.writeFileSync(targetFilePath, req.file.buffer);
-        newImageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
-      } catch (diskErr: any) {
-        console.warn('Physical disk write skipped during replace:', diskErr.message);
+
+        if (!req.file || !req.file.buffer) {
+          return res.status(400).json({ error: 'Nenhum novo arquivo enviado.' });
+        }
+
+        const photo = db.portfolioPhotos[photoIndex];
+        const category = db.portfolioCategories.find((c) => c.id === photo.categoryId);
+        const categorySlug = toSlug(category ? category.name : photo.categoryName);
+        const rawFileName = path.basename(req.file.originalname);
+        const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase();
+        let newImageUrl = '';
+
+        // 1. Upload to Supabase Storage
+        if (isSupabaseConfigured()) {
+          const storagePath = `${categorySlug}/${Date.now()}_replaced_${photo.id}.${ext}`;
+          const publicUrl = await uploadToSupabaseStorage(
+            'portfolio',
+            storagePath,
+            req.file.buffer,
+            req.file.mimetype || 'image/jpeg'
+          );
+          if (publicUrl) {
+            newImageUrl = publicUrl;
+          }
+        }
+
+        // 2. Fallback to physical disk
+        if (!newImageUrl) {
+          const safeCategoryFolder = (category ? category.name : photo.categoryName)
+            .replace(/[/\\?%*:|"<>]/g, '-')
+            .trim();
+          const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
+          if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+          }
+          const safeFileName = `${Date.now()}_replaced_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
+          try {
+            const targetFilePath = path.join(targetDir, safeFileName);
+            fs.writeFileSync(targetFilePath, req.file.buffer);
+            newImageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+          } catch (diskErr: any) {
+            console.warn('Physical disk write skipped during replace:', diskErr.message);
+          }
+        }
+
+        if (!newImageUrl) {
+          const mimeType = req.file.mimetype || 'image/jpeg';
+          newImageUrl = `data:${mimeType};base64,${req.file.buffer.toString('base64')}`;
+        }
+
+        photo.imageUrl = newImageUrl;
+        photo.thumbnailUrl = newImageUrl;
+
+        if (isSupabaseConfigured()) {
+          try {
+            await savePortfolioPhotoToSupabase(photo);
+          } catch (sbErr: any) {
+            console.error('[Supabase Replace Photo Sync Error]:', sbErr.message);
+          }
+        }
+
+        syncPortfolioLegacy();
+        saveDatabase();
+
+        return res.json({
+          success: true,
+          photo,
+          message: 'Fotografia substituída com sucesso mantendo numeração e dados.',
+        });
+      } catch (err: any) {
+        console.error('[Replace Photo Error]:', err);
+        return res.status(500).json({ error: err.message || 'Erro ao substituir fotografia' });
       }
-
-      if (!newImageUrl) {
-        const mimeType = req.file.mimetype || 'image/jpeg';
-        newImageUrl = `data:${mimeType};base64,${req.file.buffer.toString('base64')}`;
-      }
-
-      photo.imageUrl = newImageUrl;
-
-      syncPortfolioLegacy();
-      saveDatabase();
-
-      res.json({
-        success: true,
-        photo,
-        message: 'Fotografia substituída com sucesso mantendo numeração e dados.',
-      });
     }
   );
 
   // Delete Single Portfolio Photo (Admin Only)
-  app.delete('/api/admin/portfolio/photos/:id', requireAdmin, (req: Request, res: Response) => {
-    const { id } = req.params;
-    const photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
-    const legacyItem = db.portfolio ? db.portfolio.find((p) => String(p.id) === String(id)) : null;
-    const target = photo || legacyItem;
-    if (!target) {
-      return res.status(404).json({ error: 'Fotografia não encontrada.' });
-    }
-
-    // Delete physical file from disk if it was uploaded locally
-    const imgUrl = target.imageUrl;
-    if (imgUrl && imgUrl.startsWith('/portfolio/')) {
-      try {
-        const decoded = decodeURIComponent(imgUrl.replace(/^\/portfolio\//, ''));
-        const physicalPath = path.join(PORTFOLIO_DIR, decoded);
-        if (fs.existsSync(physicalPath)) {
-          fs.unlinkSync(physicalPath);
-        }
-      } catch (err) {
-        console.error('Error removing physical photo file:', err);
+  app.delete('/api/admin/portfolio/photos/:id', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
+      const legacyItem = db.portfolio ? db.portfolio.find((p) => String(p.id) === String(id)) : null;
+      const target = photo || legacyItem;
+      if (!target) {
+        return res.status(404).json({ error: 'Fotografia não encontrada.' });
       }
-    }
 
-    db.portfolioPhotos = db.portfolioPhotos.filter((p) => String(p.id) !== String(id));
-    if (db.portfolio) {
-      db.portfolio = db.portfolio.filter((p) => String(p.id) !== String(id));
-    }
-    syncPortfolioLegacy();
-    saveDatabase();
+      if (isSupabaseConfigured()) {
+        try {
+          await deletePortfolioPhotoFromSupabase(id);
+        } catch (sbErr: any) {
+          console.error('[Supabase Photo Delete Error]:', sbErr.message);
+        }
+      }
 
-    res.json({ success: true, message: 'Foto excluída do portfólio.' });
+      // Delete physical file from disk if it was uploaded locally
+      const imgUrl = target.imageUrl;
+      if (imgUrl && imgUrl.startsWith('/portfolio/')) {
+        try {
+          const decoded = decodeURIComponent(imgUrl.replace(/^\/portfolio\//, ''));
+          const physicalPath = path.join(PORTFOLIO_DIR, decoded);
+          if (fs.existsSync(physicalPath)) {
+            fs.unlinkSync(physicalPath);
+          }
+        } catch (err) {
+          console.error('Error removing physical photo file:', err);
+        }
+      }
+
+      db.portfolioPhotos = db.portfolioPhotos.filter((p) => String(p.id) !== String(id));
+      if (db.portfolio) {
+        db.portfolio = db.portfolio.filter((p) => String(p.id) !== String(id));
+      }
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({ success: true, message: 'Foto excluída do portfólio.' });
+    } catch (err: any) {
+      console.error('[Delete Photo Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao excluir fotografia' });
+    }
   });
 
   // Batch Delete Portfolio Photos (Admin Only)
-  app.post('/api/admin/portfolio/photos/batch-delete', requireAdmin, (req: Request, res: Response) => {
-    const { photoIds } = req.body;
-    if (!Array.isArray(photoIds) || photoIds.length === 0) {
-      return res.status(400).json({ error: 'IDs das fotos não informados.' });
-    }
+  app.post('/api/admin/portfolio/photos/batch-delete', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { photoIds } = req.body;
+      if (!Array.isArray(photoIds) || photoIds.length === 0) {
+        return res.status(400).json({ error: 'IDs das fotos não informados.' });
+      }
 
-    const idSet = new Set(photoIds.map((id) => String(id)));
-    let deletedCount = 0;
+      const idSet = new Set(photoIds.map((id) => String(id)));
+      let deletedCount = 0;
 
-    db.portfolioPhotos.forEach((photo) => {
-      if (idSet.has(String(photo.id))) {
-        deletedCount++;
-        if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
-          try {
-            const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
-            const physicalPath = path.join(PORTFOLIO_DIR, decoded);
-            if (fs.existsSync(physicalPath)) {
-              fs.unlinkSync(physicalPath);
-            }
-          } catch (err) {
-            console.error('Error removing physical photo file during batch delete:', err);
-          }
+      if (isSupabaseConfigured()) {
+        try {
+          await deleteBatchPortfolioPhotosFromSupabase(Array.from(idSet));
+        } catch (sbErr: any) {
+          console.error('[Supabase Batch Delete Error]:', sbErr.message);
         }
       }
-    });
 
-    db.portfolioPhotos = db.portfolioPhotos.filter((p) => !idSet.has(String(p.id)));
-    if (db.portfolio) {
-      db.portfolio = db.portfolio.filter((p) => !idSet.has(String(p.id)));
+      db.portfolioPhotos.forEach((photo) => {
+        if (idSet.has(String(photo.id))) {
+          deletedCount++;
+          if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
+            try {
+              const decoded = decodeURIComponent(photo.imageUrl.replace(/^\/portfolio\//, ''));
+              const physicalPath = path.join(PORTFOLIO_DIR, decoded);
+              if (fs.existsSync(physicalPath)) {
+                fs.unlinkSync(physicalPath);
+              }
+            } catch (err) {
+              console.error('Error removing physical photo file during batch delete:', err);
+            }
+          }
+        }
+      });
+
+      db.portfolioPhotos = db.portfolioPhotos.filter((p) => !idSet.has(String(p.id)));
+      if (db.portfolio) {
+        db.portfolio = db.portfolio.filter((p) => !idSet.has(String(p.id)));
+      }
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        count: deletedCount,
+        message: `${deletedCount} fotografia(s) excluída(s) com sucesso.`,
+      });
+    } catch (err: any) {
+      console.error('[Batch Delete Photos Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao excluir fotografias em lote' });
     }
-    syncPortfolioLegacy();
-    saveDatabase();
-
-    res.json({
-      success: true,
-      count: deletedCount,
-      message: `${deletedCount} fotografia(s) excluída(s) com sucesso.`,
-    });
   });
 
   // Batch Move / Set Category for Portfolio Photos (Admin Only)
-  app.post('/api/admin/portfolio/photos/batch-category', requireAdmin, (req: Request, res: Response) => {
-    const { photoIds, category, categoryId } = req.body;
-    if (!Array.isArray(photoIds) || photoIds.length === 0) {
-      return res.status(400).json({ error: 'Nenhuma fotografia selecionada.' });
-    }
-
-    const categoryIdentifier = categoryId || category;
-    if (!categoryIdentifier || !String(categoryIdentifier).trim()) {
-      return res.status(400).json({ error: 'Selecione uma categoria de destino válida.' });
-    }
-
-    // Find category by ID or name
-    let targetCategory = db.portfolioCategories.find(
-      (c) =>
-        c.id === categoryIdentifier ||
-        c.name.toLowerCase() === String(categoryIdentifier).toLowerCase() ||
-        toSlug(c.name) === toSlug(String(categoryIdentifier))
-    );
-
-    // Auto-create category if missing
-    if (!targetCategory) {
-      const catName = String(categoryIdentifier).trim();
-      const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
-      targetCategory = {
-        id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
-        name: catName,
-        slug: toSlug(catName),
-        order: maxOrder + 1,
-        active: true,
-        createdAt: new Date().toISOString(),
-      };
-      db.portfolioCategories.push(targetCategory);
-    }
-
-    const idSet = new Set(photoIds.map((id) => String(id)));
-    let updatedCount = 0;
-    const updatedPhotos: PortfolioPhoto[] = [];
-
-    // Calculate next order in target category
-    const photosInTarget = db.portfolioPhotos.filter((p) => p.categoryId === targetCategory!.id);
-    let highestOrder = photosInTarget.reduce((max, p) => Math.max(max, p.order || 0), 0);
-
-    db.portfolioPhotos.forEach((photo) => {
-      if (idSet.has(String(photo.id))) {
-        updatedCount++;
-        highestOrder++;
-
-        photo.categoryId = targetCategory!.id;
-        photo.categoryName = targetCategory!.name;
-        photo.order = highestOrder;
-
-        // If description has old category template, update it
-        if (!photo.description || photo.description.includes('— Fotografia original Rocha Foto & Vídeo')) {
-          photo.description = `${targetCategory!.name} — Fotografia original Rocha Foto & Vídeo`;
-        }
-
-        updatedPhotos.push({
-          ...photo,
-          category: targetCategory!.name,
-          categoryName: targetCategory!.name,
-          caption: photo.description || '',
-        });
+  app.post('/api/admin/portfolio/photos/batch-category', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { photoIds, category, categoryId } = req.body;
+      if (!Array.isArray(photoIds) || photoIds.length === 0) {
+        return res.status(400).json({ error: 'Nenhuma fotografia selecionada.' });
       }
-    });
 
-    syncPortfolioLegacy();
-    saveDatabase();
+      const categoryIdentifier = categoryId || category;
+      if (!categoryIdentifier || !String(categoryIdentifier).trim()) {
+        return res.status(400).json({ error: 'Selecione uma categoria de destino válida.' });
+      }
 
-    res.json({
-      success: true,
-      count: updatedCount,
-      category: targetCategory.name,
-      categoryId: targetCategory.id,
-      message: `${updatedCount} fotografia(s) associada(s) à categoria "${targetCategory.name}" com sucesso.`,
-      photos: updatedPhotos,
-    });
+      // Find category by ID or name
+      let targetCategory = db.portfolioCategories.find(
+        (c) =>
+          c.id === categoryIdentifier ||
+          c.name.toLowerCase() === String(categoryIdentifier).toLowerCase() ||
+          toSlug(c.name) === toSlug(String(categoryIdentifier))
+      );
+
+      // Auto-create category if missing
+      if (!targetCategory) {
+        const catName = String(categoryIdentifier).trim();
+        const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+        targetCategory = {
+          id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+          name: catName,
+          slug: toSlug(catName),
+          order: maxOrder + 1,
+          active: true,
+          createdAt: new Date().toISOString(),
+        };
+        db.portfolioCategories.push(targetCategory);
+        if (isSupabaseConfigured()) {
+          await syncCategoryToSupabase(targetCategory).catch((e: any) =>
+            console.warn('[Supabase AutoCat Error]:', e.message)
+          );
+        }
+      }
+
+      const idSet = new Set(photoIds.map((id) => String(id)));
+      let updatedCount = 0;
+      const updatedPhotos: PortfolioPhoto[] = [];
+
+      // Calculate next order in target category
+      const photosInTarget = db.portfolioPhotos.filter((p) => p.categoryId === targetCategory!.id);
+      let highestOrder = photosInTarget.reduce((max, p) => Math.max(max, p.order || 0), 0);
+
+      db.portfolioPhotos.forEach((photo) => {
+        if (idSet.has(String(photo.id))) {
+          updatedCount++;
+          highestOrder++;
+
+          photo.categoryId = targetCategory!.id;
+          photo.categoryName = targetCategory!.name;
+          photo.order = highestOrder;
+
+          if (!photo.description || photo.description.includes('— Fotografia original Rocha Foto & Vídeo')) {
+            photo.description = `${targetCategory!.name} — Fotografia original Rocha Foto & Vídeo`;
+          }
+
+          updatedPhotos.push({
+            ...photo,
+            category: targetCategory!.name,
+            categoryName: targetCategory!.name,
+            caption: photo.description || '',
+          });
+        }
+      });
+
+      if (isSupabaseConfigured() && updatedPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(updatedPhotos);
+        } catch (sbErr: any) {
+          console.error('[Supabase Batch Category Sync Error]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        count: updatedCount,
+        category: targetCategory.name,
+        categoryId: targetCategory.id,
+        message: `${updatedCount} fotografia(s) associada(s) à categoria "${targetCategory.name}" com sucesso.`,
+        photos: updatedPhotos,
+      });
+    } catch (err: any) {
+      console.error('[Batch Category Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao redefinir categorias' });
+    }
   });
 
   // Reorder Photos (Admin Only)
-  app.post('/api/admin/portfolio/photos/reorder', requireAdmin, (req: Request, res: Response) => {
-    const { photoIds } = req.body;
-    if (!Array.isArray(photoIds)) {
-      return res.status(400).json({ error: 'photoIds deve ser uma lista de IDs.' });
-    }
-
-    photoIds.forEach((photoId, index) => {
-      const photo = db.portfolioPhotos.find((p) => p.id === photoId);
-      if (photo) {
-        photo.order = index + 1;
+  app.post('/api/admin/portfolio/photos/reorder', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { photoIds } = req.body;
+      if (!Array.isArray(photoIds)) {
+        return res.status(400).json({ error: 'photoIds deve ser uma lista de IDs.' });
       }
-    });
 
-    syncPortfolioLegacy();
-    saveDatabase();
+      const modifiedPhotos: PortfolioPhoto[] = [];
+      photoIds.forEach((photoId, index) => {
+        const photo = db.portfolioPhotos.find((p) => p.id === photoId);
+        if (photo) {
+          photo.order = index + 1;
+          modifiedPhotos.push(photo);
+        }
+      });
 
-    res.json({ success: true });
+      if (isSupabaseConfigured() && modifiedPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(modifiedPhotos);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Reorder Photos Warning]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Reorder Photos Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao reordenar fotografias' });
+    }
   });
 
   // Renumber Photos Sequentially (Admin Only)
   // Ensures 001, 002, 003... across a category or entire portfolio
-  app.post('/api/admin/portfolio/photos/renumber', requireAdmin, (req: Request, res: Response) => {
-    const { categoryId } = req.body;
+  app.post('/api/admin/portfolio/photos/renumber', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { categoryId } = req.body;
 
-    const targetPhotos = categoryId
-      ? db.portfolioPhotos.filter((p) => p.categoryId === categoryId)
-      : db.portfolioPhotos;
+      const targetPhotos = categoryId
+        ? db.portfolioPhotos.filter((p) => p.categoryId === categoryId)
+        : db.portfolioPhotos;
 
-    // Sort by current order
-    targetPhotos.sort((a, b) => (a.order || 0) - (b.order || 0));
+      // Sort by current order
+      targetPhotos.sort((a, b) => (a.order || 0) - (b.order || 0));
 
-    targetPhotos.forEach((photo, idx) => {
-      photo.number = formatPhotoNumber(idx + 1);
-      photo.order = idx + 1;
-    });
+      targetPhotos.forEach((photo, idx) => {
+        photo.number = formatPhotoNumber(idx + 1);
+        photo.order = idx + 1;
+      });
 
-    syncPortfolioLegacy();
-    saveDatabase();
+      if (isSupabaseConfigured() && targetPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(targetPhotos);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Renumber Sync Warning]:', sbErr.message);
+        }
+      }
 
-    res.json({
-      success: true,
-      count: targetPhotos.length,
-      message: `${targetPhotos.length} fotografias renumeradas sequencialmente com sucesso!`,
-    });
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        count: targetPhotos.length,
+        message: `${targetPhotos.length} fotografias renumeradas sequencialmente com sucesso!`,
+      });
+    } catch (err: any) {
+      console.error('[Renumber Photos Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao renumerar fotografias' });
+    }
   });
 
   // Portfolio Summary & Stats
@@ -2071,6 +2328,12 @@ async function setupRoutes() {
         db.portfolioPhotos = [...newPhotos];
       } else {
         db.portfolioPhotos = [...newPhotos, ...db.portfolioPhotos];
+      }
+
+      if (isSupabaseConfigured() && newPhotos.length > 0) {
+        syncPortfolioPhotosToSupabase(newPhotos).catch((err: any) =>
+          console.warn('[Supabase Import Files Sync Warning]:', err.message)
+        );
       }
 
       syncPortfolioLegacy();

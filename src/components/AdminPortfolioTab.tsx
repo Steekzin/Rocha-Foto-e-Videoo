@@ -66,8 +66,6 @@ export const AdminPortfolioTab: React.FC = () => {
   // Photo CRUD Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadCategory, setUploadCategory] = useState('');
-  const [uploadTitle, setUploadTitle] = useState('');
-  const [uploadCaption, setUploadCaption] = useState('');
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
   const [uploadActive, setUploadActive] = useState(true);
 
@@ -240,20 +238,16 @@ export const AdminPortfolioTab: React.FC = () => {
 
       const filesArray: File[] = Array.from(uploadFiles);
       const res = await api.uploadPortfolioPhotos(filesArray, uploadCategory, {
-        title: uploadTitle.trim() || undefined,
-        caption: uploadCaption.trim() || undefined,
         active: uploadActive,
       });
 
       setStatusMessage({
         type: 'success',
-        text: `Sucesso! ${res.count} fotografia(s) cadastrada(s) na categoria "${uploadCategory}".`,
+        text: `Sucesso! ${res.count} fotografia(s) enviada(s) para "${uploadCategory}" com numeração sequencial automática.`,
       });
 
       setShowUploadModal(false);
       setUploadFiles(null);
-      setUploadTitle('');
-      setUploadCaption('');
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
       await loadAllData();
     } catch (err: any) {
@@ -1456,7 +1450,7 @@ export const AdminPortfolioTab: React.FC = () => {
 
               <div>
                 <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                  Selecionar Arquivos de Imagem *
+                  Selecionar Fotografias *
                 </label>
                 <input
                   type="file"
@@ -1467,35 +1461,15 @@ export const AdminPortfolioTab: React.FC = () => {
                   onChange={(e) => setUploadFiles(e.target.files)}
                   className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none"
                 />
-                <span className="text-[10px] text-[#8e95a2] mt-1 block">
-                  {uploadFiles ? `${uploadFiles.length} arquivo(s) selecionado(s)` : 'Você pode selecionar múltiplas fotos de uma vez.'}
-                </span>
-              </div>
-
-              <div>
-                <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                  Título Base (Opcional)
-                </label>
-                <input
-                  type="text"
-                  value={uploadTitle}
-                  onChange={(e) => setUploadTitle(e.target.value)}
-                  placeholder="ex: Ensaio de Casamento no Pôr do Sol"
-                  className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                  Legenda / Descrição (Opcional)
-                </label>
-                <textarea
-                  rows={2}
-                  value={uploadCaption}
-                  onChange={(e) => setUploadCaption(e.target.value)}
-                  placeholder="Detalhes ou história sobre o ensaio..."
-                  className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none"
-                />
+                <div className="mt-2 p-3 bg-[#171b22] border border-[#242a35] rounded-lg">
+                  <div className="flex items-center justify-between text-[11px] text-[#c99e64] font-medium">
+                    <span>{uploadFiles && uploadFiles.length > 0 ? `📷 ${uploadFiles.length} foto(s) selecionada(s)` : 'Selecione uma ou mais fotos'}</span>
+                    <span className="text-[10px] text-[#8e95a2]">JPEG, PNG, WebP</span>
+                  </div>
+                  <p className="text-[10px] text-[#8e95a2] mt-1 leading-relaxed">
+                    ✨ O sistema atribui automaticamente os números visuais (#001, #002...) e organiza as fotos na ordem sequencial da categoria no Supabase.
+                  </p>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 pt-2">
@@ -1524,7 +1498,7 @@ export const AdminPortfolioTab: React.FC = () => {
                   disabled={loading}
                   className="px-5 py-2.5 bg-[#c99e64] text-black font-bold uppercase tracking-wider rounded-lg hover:bg-[#d8ae74] shadow-md shadow-[#c99e64]/20"
                 >
-                  {loading ? 'Enviando...' : 'Concluir Upload'}
+                  {loading ? 'Enviando...' : 'Subir Fotografias'}
                 </button>
               </div>
             </form>
