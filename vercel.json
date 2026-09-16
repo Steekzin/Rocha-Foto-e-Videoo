@@ -3,14 +3,14 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api"
+      "destination": "/api?path=$1"
     },
     {
       "source": "/portfolio/(.*)",
-      "destination": "/api"
+      "destination": "/api?portfolioPath=$1"
     },
     {
-      "source": "/((?!api/|portfolio/).*)",
+      "source": "/((?!api/|portfolio/|assets/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]

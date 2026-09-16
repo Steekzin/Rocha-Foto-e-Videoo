@@ -56,8 +56,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   setCurrentUser,
 }) => {
   // Admin authentication check
-  const [adminEmail, setAdminEmail] = useState('admin@rochafotoevideo.com.br');
-  const [adminPassword, setAdminPassword] = useState('admin123');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -490,9 +490,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               <input
                 type="email"
                 required
+                placeholder="seu.email@exemplo.com"
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
-                className="w-full bg-[#0a0c0e] border border-[#262b35] rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                className="w-full bg-[#0a0c0e] border border-[#262b35] rounded-xl px-4 py-3 text-xs text-white placeholder-[#525966] focus:outline-none focus:border-[#c99e64]"
               />
             </div>
 
@@ -503,9 +504,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               <input
                 type="password"
                 required
+                placeholder="Digite sua senha"
                 value={adminPassword}
                 onChange={(e) => setAdminPassword(e.target.value)}
-                className="w-full bg-[#0a0c0e] border border-[#262b35] rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                className="w-full bg-[#0a0c0e] border border-[#262b35] rounded-xl px-4 py-3 text-xs text-white placeholder-[#525966] focus:outline-none focus:border-[#c99e64]"
               />
             </div>
 
@@ -517,30 +519,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               {isLoggingIn ? 'Autenticando...' : 'Acessar Painel do Estúdio'}
             </button>
           </form>
-
-          <div className="mt-6 pt-6 border-t border-[#1e232b] text-center space-y-2">
-            <button
-              type="button"
-              id="btn-quick-admin-login"
-              onClick={() => {
-                setAdminEmail('admin@rochafotoevideo.com.br');
-                setAdminPassword('admin123');
-                api.login('admin@rochafotoevideo.com.br', 'admin123').then((res) => {
-                  setCurrentUser(res.user);
-                  localStorage.setItem('rocha_user', JSON.stringify(res.user));
-                }).catch((err) => {
-                  setAuthError(err.message);
-                });
-              }}
-              className="w-full py-2 bg-[#1a1e26] hover:bg-[#232833] border border-[#2b313d] text-xs text-[#c99e64] font-semibold rounded-lg transition-colors cursor-pointer"
-            >
-              Entrar Automaticamente como Admin
-            </button>
-            <p className="text-[11px] text-[#828a95]">
-              Credenciais: <code className="text-[#c99e64]">admin@rochafotoevideo.com.br</code> /{' '}
-              <code className="text-[#c99e64]">admin123</code>
-            </p>
-          </div>
         </div>
       </div>
     );

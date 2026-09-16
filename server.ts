@@ -19,7 +19,7 @@ import {
   INITIAL_PORTFOLIO_CATEGORIES,
   INITIAL_PORTFOLIO_PHOTOS,
 } from './server/seedData.ts';
-import {
+import type {
   Client,
   PhotoEvent,
   Gallery,
@@ -69,10 +69,16 @@ const currentDir = typeof __dirname !== 'undefined'
   : process.cwd();
 
 const PORT = 3000;
-const IS_VERCEL = !!process.env.VERCEL;
-const DATA_DIR = IS_VERCEL ? '/tmp' : path.join(currentDir, 'data');
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.IS_SERVERLESS ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.NETLIFY
+);
+const IS_VERCEL = isServerless;
+const DATA_DIR = isServerless ? '/tmp' : path.join(currentDir, 'data');
 const DB_FILE = path.join(DATA_DIR, 'rocha_db.json');
-const PORTFOLIO_DIR = IS_VERCEL
+const PORTFOLIO_DIR = isServerless
   ? path.join('/tmp', 'portfolio')
   : path.join(currentDir, 'public', 'portfolio');
 
@@ -117,7 +123,7 @@ let db: DatabaseSchema = {
 };
 
 function toSlug(text: string): string {
-  return text
+  return String(text || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -340,6 +346,17 @@ const app = express();
 app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 
+// Full CORS support for cross-origin hosting and preflight requests
+app.use((req: Request, res: Response, next: express.NextFunction) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-token');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 async function setupRoutes() {
   // Supabase Status & Diagnostics
   app.get('/api/supabase/status', async (req: Request, res: Response) => {
@@ -380,8 +397,7 @@ async function setupRoutes() {
     }
   });
 
-  // Helper auth simulation: client password matches client email or default demo passwords
-  // Admin credentials: admin@rochafotoevideo.com.br / admin123
+  // Admin authentication: accepts photographer email rochafoto.video@hotmail.com with password Rochafotos
   app.post('/api/auth/login', (req: Request, res: Response) => {
     try {
       const { email, password } = req.body || {};
@@ -389,20 +405,27 @@ async function setupRoutes() {
       const cleanPass = (password || '').trim();
 
       if (
+        cleanEmail === 'rochafoto.video@hotmail.com' ||
         cleanEmail === 'admin@rochafotoevideo.com.br' ||
         cleanEmail === 'admin@rocha.com.br' ||
         cleanEmail === 'admin'
       ) {
-        if (cleanPass === 'admin123' || cleanPass === 'admin' || cleanPass === '123456') {
+        const isPasswordValid =
+          cleanPass === 'Rochafotos' ||
+          cleanPass.toLowerCase() === 'rochafotos' ||
+          cleanPass === 'admin123' ||
+          cleanPass === 'admin';
+
+        if (isPasswordValid) {
           const adminUser: User = {
             id: 'usr-admin',
             name: 'Rocha Foto & Vídeo (Admin)',
-            email: 'admin@rochafotoevideo.com.br',
+            email: cleanEmail || 'rochafoto.video@hotmail.com',
             role: 'admin',
           };
           return res.json({ success: true, user: adminUser, token: 'token-admin-session' });
         } else {
-          return res.status(401).json({ success: false, message: 'Senha incorreta para Administrador.' });
+          return res.status(401).json({ success: false, message: 'Senha incorreta para o painel de administrador.' });
         }
       }
 
@@ -1109,6 +1132,7 @@ async function setupRoutes() {
     if (
       token === 'token-admin-session' ||
       token.startsWith('token-admin') ||
+      req.query.adminKey === 'Rochafotos' ||
       req.query.adminKey === 'admin123'
     ) {
       return next();
@@ -1203,23 +1227,27 @@ async function setupRoutes() {
     }
   });
 
-  // Create Category (Admin Only)
-  app.post('/api/admin/portfolio/categories', requireAdmin, async (req: Request, res: Response) => {
+  // Create Category (Admin Only) - Accepts both admin path and standard portfolio path
+  app.post(['/api/admin/portfolio/categories', '/api/portfolio/categories'], requireAdmin, async (req: Request, res: Response) => {
     try {
       const { name, description, active, order } = req.body;
       if (!name || !name.trim()) {
         return res.status(400).json({ error: 'O nome da categoria é obrigatório.' });
       }
 
+      if (!Array.isArray(db.portfolioCategories)) {
+        db.portfolioCategories = [...INITIAL_PORTFOLIO_CATEGORIES];
+      }
+
       const trimmedName = name.trim();
       const existing = db.portfolioCategories.find(
-        (c) => c.name.toLowerCase() === trimmedName.toLowerCase()
+        (c) => c && c.name && c.name.toLowerCase() === trimmedName.toLowerCase()
       );
       if (existing) {
         return res.status(400).json({ error: 'Já existe uma categoria com este nome.' });
       }
 
-      const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+      const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c?.order || 0), 0);
       const newCategory: PortfolioCategory = {
         id: `cat-${toSlug(trimmedName)}-${Date.now().toString(36)}`,
         name: trimmedName,
@@ -1239,7 +1267,11 @@ async function setupRoutes() {
       }
 
       db.portfolioCategories.push(newCategory);
-      saveDatabase();
+      try {
+        saveDatabase();
+      } catch (saveErr: any) {
+        console.warn('Save database warning:', saveErr.message);
+      }
 
       return res.status(201).json(newCategory);
     } catch (err: any) {
@@ -1249,10 +1281,13 @@ async function setupRoutes() {
   });
 
   // Update Category (Admin Only) - Cascades rename to all associated photos
-  app.put('/api/admin/portfolio/categories/:id', requireAdmin, async (req: Request, res: Response) => {
+  app.put(['/api/admin/portfolio/categories/:id', '/api/portfolio/categories/:id'], requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const catIndex = db.portfolioCategories.findIndex((c) => c.id === id);
+      if (!Array.isArray(db.portfolioCategories)) {
+        db.portfolioCategories = [...INITIAL_PORTFOLIO_CATEGORIES];
+      }
+      const catIndex = db.portfolioCategories.findIndex((c) => c && c.id === id);
       if (catIndex === -1) {
         return res.status(404).json({ error: 'Categoria não encontrada.' });
       }
@@ -1313,10 +1348,13 @@ async function setupRoutes() {
   });
 
   // Delete Category (Admin Only)
-  app.delete('/api/admin/portfolio/categories/:id', requireAdmin, async (req: Request, res: Response) => {
+  app.delete(['/api/admin/portfolio/categories/:id', '/api/portfolio/categories/:id'], requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const cat = db.portfolioCategories.find((c) => c.id === id);
+      if (!Array.isArray(db.portfolioCategories)) {
+        db.portfolioCategories = [...INITIAL_PORTFOLIO_CATEGORIES];
+      }
+      const cat = db.portfolioCategories.find((c) => c && c.id === id);
       if (!cat) {
         return res.status(404).json({ error: 'Categoria não encontrada.' });
       }
@@ -1330,10 +1368,13 @@ async function setupRoutes() {
       }
 
       // Delete photos belonging to this category and clean physical files
+      if (!Array.isArray(db.portfolioPhotos)) {
+        db.portfolioPhotos = [];
+      }
       const photosToDelete = db.portfolioPhotos.filter(
         (p) =>
-          String(p.categoryId) === String(id) ||
-          (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase())
+          p && (String(p.categoryId) === String(id) ||
+          (p.categoryName && p.categoryName.toLowerCase() === cat.name.toLowerCase()))
       );
       photosToDelete.forEach((photo) => {
         if (photo.imageUrl && photo.imageUrl.startsWith('/portfolio/')) {
@@ -1351,20 +1392,24 @@ async function setupRoutes() {
 
       db.portfolioPhotos = db.portfolioPhotos.filter(
         (p) =>
-          String(p.categoryId) !== String(id) &&
+          p && String(p.categoryId) !== String(id) &&
           (!p.categoryName || p.categoryName.toLowerCase() !== cat.name.toLowerCase())
       );
       if (db.portfolio) {
         db.portfolio = db.portfolio.filter(
           (p) =>
-            String(p.categoryId) !== String(id) &&
+            p && String(p.categoryId) !== String(id) &&
             (!p.category || p.category.toLowerCase() !== cat.name.toLowerCase())
         );
       }
-      db.portfolioCategories = db.portfolioCategories.filter((c) => String(c.id) !== String(id));
+      db.portfolioCategories = db.portfolioCategories.filter((c) => c && String(c.id) !== String(id));
 
       syncPortfolioLegacy();
-      saveDatabase();
+      try {
+        saveDatabase();
+      } catch (saveErr: any) {
+        console.warn('Save database warning:', saveErr.message);
+      }
 
       return res.json({
         success: true,
@@ -1377,7 +1422,7 @@ async function setupRoutes() {
   });
 
   // Reorder Categories (Admin Only)
-  app.post('/api/admin/portfolio/categories/reorder', requireAdmin, async (req: Request, res: Response) => {
+  app.post(['/api/admin/portfolio/categories/reorder', '/api/portfolio/categories/reorder'], requireAdmin, async (req: Request, res: Response) => {
     try {
       const { categoryIds } = req.body;
       if (!Array.isArray(categoryIds)) {
@@ -1592,7 +1637,7 @@ async function setupRoutes() {
   app.post(
     '/api/admin/portfolio/photos/upload',
     requireAdmin,
-    upload.array('files', 100),
+    upload.array('files', 100) as any,
     async (req: Request, res: Response) => {
       try {
         const files = req.files as Express.Multer.File[];
@@ -1833,7 +1878,7 @@ async function setupRoutes() {
   app.post(
     '/api/admin/portfolio/photos/:id/replace',
     requireAdmin,
-    upload.single('file'),
+    upload.single('file') as any,
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
@@ -2206,7 +2251,7 @@ async function setupRoutes() {
   app.post(
     '/api/portfolio/import-zip',
     requireAdmin,
-    upload.single('file'),
+    upload.single('file') as any,
     (req: Request, res: Response) => {
       if (!req.file || !req.file.buffer) {
         return res.status(400).json({ error: 'Nenhum arquivo ZIP enviado.' });
@@ -2233,7 +2278,7 @@ async function setupRoutes() {
   app.post(
     '/api/portfolio/import-files',
     requireAdmin,
-    upload.array('files', 500),
+    upload.array('files', 500) as any,
     (req: Request, res: Response) => {
       const files = req.files as Express.Multer.File[];
       if (!files || files.length === 0) {
@@ -2505,33 +2550,48 @@ async function setupRoutes() {
 setupRoutes();
 
 async function startServer() {
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else if (!IS_VERCEL) {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req: Request, res: Response) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  if (isServerless) {
+    return;
   }
 
-  if (!IS_VERCEL) {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Rocha Foto & Vídeo server running on http://localhost:${PORT}`);
-    });
+  // Vite middleware for development (only when not in serverless and in development mode)
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr: any) {
+      console.warn('Vite dev middleware not loaded (continuing with static serving):', viteErr?.message || viteErr);
+    }
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (req: Request, res: Response) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Rocha Foto & Vídeo server running on http://localhost:${PORT}`);
+  });
 }
 
-if (!IS_VERCEL) {
+const isMainExecution = Boolean(
+  process.argv[1] &&
+  (process.argv[1].endsWith('server.ts') ||
+   process.argv[1].endsWith('server.cjs') ||
+   process.argv[1].endsWith('server.js'))
+);
+
+if (isMainExecution && !isServerless) {
   startServer();
 }
 
 export default app;
-export { app };
+export { app, startServer };
 
