@@ -88,7 +88,7 @@ export async function testSupabaseConnection(): Promise<{
     return {
       configured: true,
       connected: false,
-      url: process.env.SUPABASE_URL || null,
+      url: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL,
       error: 'Não foi possível instanciar o cliente Supabase',
     };
   }
@@ -101,7 +101,7 @@ export async function testSupabaseConnection(): Promise<{
       return {
         configured: true,
         connected: false,
-        url: process.env.SUPABASE_URL || null,
+        url: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL,
         error: `Erro ao consultar tabelas no Supabase: ${error.message}. Você já executou o arquivo supabase_schema.sql no SQL Editor?`,
       };
     }
@@ -111,7 +111,7 @@ export async function testSupabaseConnection(): Promise<{
     return {
       configured: true,
       connected: true,
-      url: process.env.SUPABASE_URL || null,
+      url: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL,
     };
   } catch (err: any) {
     return {

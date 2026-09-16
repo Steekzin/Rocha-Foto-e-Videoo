@@ -3,17 +3,9 @@ process.env.IS_SERVERLESS = 'true';
 process.env.VERCEL = process.env.VERCEL || '1';
 process.env.NODE_ENV = 'production';
 
-let cachedApp: any = null;
+import app from '../server.ts';
 
-async function getExpressApp() {
-  if (!cachedApp) {
-    const mod = await import('../server.ts');
-    cachedApp = mod.default || mod.app;
-  }
-  return cachedApp;
-}
-
-export default async function handler(req: any, res: any) {
+export default function handler(req: any, res: any) {
   // Add CORS headers immediately
   if (res && res.setHeader) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -51,7 +43,6 @@ export default async function handler(req: any, res: any) {
       req.url = `/api${req.url.startsWith('/') ? '' : '/'}${req.url}`;
     }
 
-    const app = await getExpressApp();
     return app(req, res);
   } catch (err: any) {
     console.error('[API Handler Error]:', err);
