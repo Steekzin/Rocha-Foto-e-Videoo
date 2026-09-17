@@ -34,6 +34,7 @@ import {
   Copy,
   Terminal,
   Zap,
+  ChevronDown,
 } from 'lucide-react';
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
 import { api } from '../services/api.js';
@@ -86,6 +87,7 @@ export const AdminPortfolioTab: React.FC = () => {
   const [copiedExtractorCode, setCopiedExtractorCode] = useState(false);
   const [inlineEditingPhotoId, setInlineEditingPhotoId] = useState<string | null>(null);
   const [inlineDraftTitle, setInlineDraftTitle] = useState<string>('');
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
 
   // Photo CRUD Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -928,6 +930,107 @@ export const AdminPortfolioTab: React.FC = () => {
               <span>Nova Categoria</span>
             </button>
 
+            {/* Tools Menu Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowToolsMenu((prev) => !prev)}
+                className="px-3 py-2 bg-[#1a1e26] hover:bg-[#232933] border border-[#2b313d] text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#c99e64]" />
+                <span>Ferramentas & Ações</span>
+                <ChevronDown className="w-3 h-3 text-[#9ca3af]" />
+              </button>
+
+              {showToolsMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setShowToolsMenu(false)}
+                  />
+                  <div className="absolute right-0 mt-1.5 w-64 bg-[#141820] border border-[#262e3d] rounded-xl shadow-2xl p-1.5 z-40 space-y-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        handleOpenQuickTitleEditor();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#1f2533] text-white flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <ClipboardList className="w-4 h-4 text-[#c99e64]" />
+                      <div>
+                        <div className="font-medium">Editor Rápido de Nomes</div>
+                        <div className="text-[10px] text-[#8e95a2]">Editar em lista ou colar do site original</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        setBatchRenameScope(selectedPhotoIds.length > 0 ? 'selected' : (selectedCategoryFilter !== 'Todos' ? 'current_category' : 'all'));
+                        setShowBatchRenameModal(true);
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#1f2533] text-white flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <Sparkles className="w-4 h-4 text-[#c99e64]" />
+                      <div>
+                        <div className="font-medium">Padronizar Títulos</div>
+                        <div className="text-[10px] text-[#8e95a2]">Limpar prefixos imgi, DSC, etc.</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        handleRenumberCategory(selectedCategoryFilter);
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#1f2533] text-white flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <Hash className="w-4 h-4 text-[#c99e64]" />
+                      <div>
+                        <div className="font-medium">Renumerar Sequencial (#001...)</div>
+                        <div className="text-[10px] text-[#8e95a2]">Reorganizar numeração da categoria</div>
+                      </div>
+                    </button>
+
+                    <div className="my-1 border-t border-[#202734]" />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        setActiveSubTab('import');
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#1f2533] text-white flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <Archive className="w-4 h-4 text-[#c99e64]" />
+                      <div>
+                        <div className="font-medium">Importar Pasta ou ZIP</div>
+                        <div className="text-[10px] text-[#8e95a2]">Importação com estrutura de pastas</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        handleResetDemo();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-red-950/40 text-red-300 hover:text-red-200 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="w-4 h-4 text-red-400" />
+                      <div>
+                        <div className="font-medium">Restaurar Fotos de Demonstração</div>
+                        <div className="text-[10px] text-red-400/80">Recarregar fotos padrão de exemplo</div>
+                      </div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               onClick={loadAllData}
               disabled={loading}
@@ -1046,8 +1149,8 @@ export const AdminPortfolioTab: React.FC = () => {
       {/* ========================================================= */}
       {activeSubTab === 'photos' && (
         <div className="space-y-6">
-          {/* Controls Bar: Filters & Actions */}
-          <div className="bg-[#12151a] rounded-xl border border-[#20252e] p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          {/* Clean Controls Bar: Filters & Search */}
+          <div className="bg-[#12151a] rounded-xl border border-[#20252e] p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               {/* Category selector */}
               <div className="flex items-center gap-2">
@@ -1066,12 +1169,12 @@ export const AdminPortfolioTab: React.FC = () => {
                 </select>
               </div>
 
-              {/* Status filter */}
-              <div className="flex items-center gap-1.5 bg-[#0c0e11] p-1 rounded-lg border border-[#262b35]">
+              {/* Status filter pills */}
+              <div className="flex items-center gap-1 bg-[#0c0e11] p-1 rounded-lg border border-[#262b35]">
                 <button
                   type="button"
                   onClick={() => setSelectedStatusFilter('all')}
-                  className={`px-2.5 py-1 text-[11px] rounded ${
+                  className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
                     selectedStatusFilter === 'all'
                       ? 'bg-[#c99e64] text-black font-semibold'
                       : 'text-[#9ca3af] hover:text-white'
@@ -1082,7 +1185,7 @@ export const AdminPortfolioTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSelectedStatusFilter('active')}
-                  className={`px-2.5 py-1 text-[11px] rounded ${
+                  className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
                     selectedStatusFilter === 'active'
                       ? 'bg-emerald-600 text-white font-semibold'
                       : 'text-[#9ca3af] hover:text-white'
@@ -1093,7 +1196,7 @@ export const AdminPortfolioTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSelectedStatusFilter('inactive')}
-                  className={`px-2.5 py-1 text-[11px] rounded ${
+                  className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
                     selectedStatusFilter === 'inactive'
                       ? 'bg-zinc-700 text-white font-semibold'
                       : 'text-[#9ca3af] hover:text-white'
@@ -1104,15 +1207,15 @@ export const AdminPortfolioTab: React.FC = () => {
               </div>
             </div>
 
-            {/* Search and Renumber */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
+            {/* Search and Select All */}
+            <div className="flex items-center gap-2 justify-between sm:justify-end">
+              <div className="relative flex-1 sm:flex-initial">
                 <input
                   type="text"
-                  placeholder="Buscar por número, título ou legenda..."
+                  placeholder="Buscar foto por número, título..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-56 sm:w-64 pl-8 pr-3 py-1.5 bg-[#0c0e11] border border-[#262b35] rounded-lg text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#c99e64]"
+                  className="w-full sm:w-64 pl-8 pr-7 py-1.5 bg-[#0c0e11] border border-[#262b35] rounded-lg text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#c99e64]"
                 />
                 <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                 {searchQuery && (
@@ -1125,82 +1228,58 @@ export const AdminPortfolioTab: React.FC = () => {
                 )}
               </div>
 
-              <button
-                onClick={() => handleRenumberCategory(selectedCategoryFilter)}
-                title="Renumerar sequencialmente as fotos de 001 em diante"
-                className="px-3 py-1.5 bg-[#171b22] hover:bg-[#222834] border border-[#2b313d] text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                <Hash className="w-3.5 h-3.5 text-[#c99e64]" />
-                <span>Renumerar 001...</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setBatchRenameScope(selectedPhotoIds.length > 0 ? 'selected' : (selectedCategoryFilter !== 'Todos' ? 'current_category' : 'all'));
-                  setShowBatchRenameModal(true);
-                }}
-                title="Padronizar e limpar títulos de fotos em lote (remover imgi, DSC, etc.)"
-                className="px-3 py-1.5 bg-[#c99e64]/15 hover:bg-[#c99e64]/25 border border-[#c99e64]/50 text-xs text-[#c99e64] font-medium rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-[#c99e64]" />
-                <span>Padronizar Títulos</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleOpenQuickTitleEditor}
-                title="Editor Rápido de Nomes: edite todos os títulos em lista ou cole lista de nomes do seu site oficial"
-                className="px-3 py-1.5 bg-[#1a212d] hover:bg-[#232c3d] border border-[#303c52] text-xs text-white font-medium rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <ClipboardList className="w-3.5 h-3.5 text-[#c99e64]" />
-                <span>Editor Rápido de Nomes</span>
-              </button>
+              {filteredPhotos.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedPhotoIds.length === filteredPhotos.length) {
+                      setSelectedPhotoIds([]);
+                    } else {
+                      setSelectedPhotoIds(filteredPhotos.map((p) => String(p.id)));
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors shrink-0 cursor-pointer ${
+                    selectedPhotoIds.length === filteredPhotos.length
+                      ? 'bg-[#c99e64] text-black border-[#c99e64]'
+                      : 'bg-[#171b22] hover:bg-[#222834] text-gray-300 border-[#2b313d]'
+                  }`}
+                >
+                  {selectedPhotoIds.length === filteredPhotos.length
+                    ? 'Desmarcar Todas'
+                    : 'Selecionar Todas'}
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Batch Actions & Selection Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#0f1217] p-3 rounded-xl border border-[#20252e]">
-            <div className="flex items-center gap-3 text-xs">
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedPhotoIds.length === filteredPhotos.length && filteredPhotos.length > 0) {
-                    setSelectedPhotoIds([]);
-                  } else {
-                    setSelectedPhotoIds(filteredPhotos.map((p) => String(p.id)));
-                  }
-                }}
-                className="px-2.5 py-1 bg-[#171b22] hover:bg-[#222834] text-gray-300 rounded border border-[#2b313d] transition-colors cursor-pointer"
-              >
-                {selectedPhotoIds.length === filteredPhotos.length && filteredPhotos.length > 0
-                  ? 'Desmarcar Todas'
-                  : 'Selecionar Todas'}
-              </button>
+          {/* Sticky Selection Bar - only shown when items are selected */}
+          {selectedPhotoIds.length > 0 && (
+            <div className="sticky top-4 z-30 bg-gradient-to-r from-[#181d26] via-[#151922] to-[#12151c] p-3 rounded-xl border border-[#c99e64]/60 shadow-2xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-200">
+              <div className="flex items-center gap-3 text-xs">
+                <span className="px-2.5 py-1 bg-[#c99e64] text-black font-bold rounded-md text-xs shadow-sm">
+                  {selectedPhotoIds.length} foto(s) selecionada(s)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPhotoIds([])}
+                  className="text-xs text-[#9ca3af] hover:text-white underline cursor-pointer"
+                >
+                  Desmarcar
+                </button>
+              </div>
 
-              <span className="text-gray-400">
-                {selectedPhotoIds.length > 0 ? (
-                  <strong className="text-[#c99e64]">{selectedPhotoIds.length} foto(s) selecionada(s)</strong>
-                ) : (
-                  <span>{filteredPhotos.length} fotos exibidas</span>
-                )}
-              </span>
-            </div>
-
-            {selectedPhotoIds.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 {/* Batch Move to Category */}
-                <div className="flex items-center gap-1.5 bg-[#171b22] px-2.5 py-1 rounded-lg border border-[#2b313d]">
+                <div className="flex items-center gap-1.5 bg-[#0c0e11] px-2 py-1 rounded-lg border border-[#2b313d]">
                   <FolderInput className="w-3.5 h-3.5 text-[#c99e64]" />
-                  <span className="text-[11px] text-gray-300 font-medium">Mover para:</span>
                   <select
                     value={batchTargetCategory}
                     onChange={(e) => setBatchTargetCategory(e.target.value)}
-                    className="bg-[#0c0e11] border border-[#262b35] rounded px-2 py-0.5 text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                    className="bg-transparent border-0 text-xs text-white focus:outline-none cursor-pointer"
                   >
-                    <option value="">Selecione categoria...</option>
+                    <option value="" className="bg-[#12151a]">Mover para categoria...</option>
                     {categories.map((c) => (
-                      <option key={c.id} value={c.name}>
+                      <option key={c.id} value={c.name} className="bg-[#12151a]">
                         {c.name}
                       </option>
                     ))}
@@ -1209,7 +1288,7 @@ export const AdminPortfolioTab: React.FC = () => {
                     type="button"
                     disabled={!batchTargetCategory || loading}
                     onClick={() => handleBatchMovePhotos()}
-                    className="px-2.5 py-1 bg-[#c99e64] hover:bg-[#d8ae74] disabled:opacity-50 text-black font-bold text-xs rounded transition-colors cursor-pointer"
+                    className="px-2.5 py-0.5 bg-[#c99e64] hover:bg-[#d8ae74] disabled:opacity-40 text-black font-bold text-xs rounded transition-colors cursor-pointer"
                   >
                     Mover
                   </button>
@@ -1217,59 +1296,69 @@ export const AdminPortfolioTab: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setSelectedPhotoIds([])}
-                  className="px-2.5 py-1 text-xs text-gray-400 hover:text-white cursor-pointer"
-                >
-                  Limpar
-                </button>
-                <button
-                  type="button"
                   onClick={() => {
                     setBatchRenameScope('selected');
                     setShowBatchRenameModal(true);
                   }}
-                  className="px-3 py-1 bg-[#c99e64]/20 hover:bg-[#c99e64]/35 text-[#c99e64] border border-[#c99e64]/40 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                  className="px-2.5 py-1.5 bg-[#171b22] hover:bg-[#222834] text-[#c99e64] border border-[#c99e64]/40 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Padronizar ({selectedPhotoIds.length})</span>
+                  <span>Padronizar Títulos</span>
                 </button>
+
                 <button
                   type="button"
                   onClick={handleOpenQuickTitleEditor}
-                  className="px-3 py-1 bg-[#1a212d] hover:bg-[#232c3d] text-white border border-[#303c52] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                  className="px-2.5 py-1.5 bg-[#1a212d] hover:bg-[#232c3d] text-white border border-[#303c52] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                   title="Editar nomes das fotos selecionadas em lista rápida"
                 >
                   <ClipboardList className="w-3.5 h-3.5 text-[#c99e64]" />
-                  <span>Editar Nomes ({selectedPhotoIds.length})</span>
+                  <span>Editar Nomes</span>
                 </button>
+
                 <button
                   type="button"
                   onClick={() => setShowBatchDeleteModal(true)}
-                  className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer shadow-md transition-colors"
+                  className="px-2.5 py-1.5 bg-red-950/50 hover:bg-red-900/60 border border-red-800/70 text-red-300 font-semibold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Excluir Selecionadas ({selectedPhotoIds.length})</span>
+                  <span>Excluir</span>
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Photos Visual Grid */}
           {filteredPhotos.length === 0 ? (
             <div className="py-16 text-center bg-[#12151a] rounded-xl border border-[#20252e] p-8">
               <Camera className="w-10 h-10 text-[#c99e64] mx-auto mb-3 opacity-60" />
               <h3 className="text-base font-serif-luxury text-white">Nenhuma fotografia encontrada</h3>
-              <p className="text-xs text-[#9ca3af] mt-1 mb-4">
+              <p className="text-xs text-[#9ca3af] mt-1 mb-5 max-w-md mx-auto">
                 {searchQuery
                   ? `Não encontramos fotografias correspondentes a "${searchQuery}".`
-                  : 'Nenhuma foto cadastrada para os filtros selecionados.'}
+                  : `Nenhuma foto cadastrada na categoria "${selectedCategoryFilter}". Adicione suas fotos reais ou restaure as fotos de exemplo.`}
               </p>
-              <button
-                onClick={() => setShowUploadModal(true)}
-                className="px-4 py-2 bg-[#c99e64] text-black text-xs font-bold uppercase tracking-wider rounded-lg"
-              >
-                Fazer Upload de Novas Fotos
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <button
+                  onClick={() => {
+                    if (selectedCategoryFilter !== 'Todos') {
+                      setUploadCategory(selectedCategoryFilter);
+                    }
+                    setShowUploadModal(true);
+                  }}
+                  className="px-4 py-2 bg-[#c99e64] hover:bg-[#d8ae74] text-black text-xs font-bold uppercase tracking-wider rounded-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Adicionar Fotos</span>
+                </button>
+                <button
+                  onClick={handleResetDemo}
+                  className="px-4 py-2 bg-[#1a1e26] hover:bg-[#232933] border border-[#2b313d] text-xs text-white font-medium rounded-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-[#c99e64]" />
+                  <span>Restaurar Fotos de Exemplo</span>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">

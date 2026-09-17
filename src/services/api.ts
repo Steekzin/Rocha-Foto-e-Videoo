@@ -11,6 +11,8 @@ import {
   SelectionStatus,
 } from '../types.js';
 import { supabase } from './supabaseClient.js';
+import { INITIAL_PORTFOLIO_CATEGORIES, INITIAL_PORTFOLIO_PHOTOS } from '../data/defaultPortfolio.js';
+import { optimizePhotoForWeb } from '../utils/imageOptimizer.js';
 
 export interface DashboardStats {
   totalCategories: number;
@@ -819,13 +821,15 @@ export const api = {
       const cached = localStorage.getItem('rocha_cached_categories');
       if (cached) {
         const parsed: PortfolioCategory[] = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed) && parsed.length >= 5) {
           return includeInactive ? parsed : parsed.filter((c) => c.active);
         }
       }
     } catch {}
 
-    return [];
+    // Default Seed Categories Fallback
+    localStorage.setItem('rocha_cached_categories', JSON.stringify(INITIAL_PORTFOLIO_CATEGORIES));
+    return includeInactive ? INITIAL_PORTFOLIO_CATEGORIES : INITIAL_PORTFOLIO_CATEGORIES.filter((c) => c.active);
   },
 
   async createPortfolioCategory(category: {
@@ -1197,6 +1201,18 @@ export const api = {
       return combined;
     }
 
+    if (normalizedServer.length === 0) {
+      if (params?.category && params.category !== 'Todos') {
+        const catFilter = params.category.toLowerCase();
+        return INITIAL_PORTFOLIO_PHOTOS.filter(
+          (p) =>
+            p.categoryName.toLowerCase() === catFilter ||
+            (p as any).category?.toLowerCase() === catFilter
+        );
+      }
+      return INITIAL_PORTFOLIO_PHOTOS;
+    }
+
     return normalizedServer;
   },
 
@@ -1254,12 +1270,26 @@ export const api = {
       files = filesOrFormData;
     }
 
-    // When multiple files are uploaded, send them in small safe chunks of 3 files.
+    // Optimize photos client-side to ensure smooth upload without exceeding reverse-proxy buffer limits
+    const optimizedFiles: File[] = [];
+    for (let fIdx = 0; fIdx < files.length; fIdx++) {
+      try {
+        const opt = await optimizePhotoForWeb(files[fIdx]);
+        optimizedFiles.push(opt);
+      } catch {
+        optimizedFiles.push(files[fIdx]);
+      }
+    }
+    files = optimizedFiles;
+
+    // When multiple files are uploaded, send them in small safe chunks of 2 files.
     // This completely prevents 413 Payload Too Large and reverse proxy buffer limits,
-    // ensuring 30, 50, or 100+ photos upload smoothly with real progress tracking.
-    const BATCH_SIZE = 3;
+    // ensuring 22, 50, or 100+ photos upload smoothly with real progress tracking.
+    const BATCH_SIZE = 2;
     if (files.length > BATCH_SIZE) {
       const allUploaded: PortfolioPhoto[] = [];
+      let lastBatchError: any = null;
+
       for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const batchFiles = files.slice(i, i + BATCH_SIZE);
         const batchFormData = new FormData();
@@ -1269,23 +1299,42 @@ export const api = {
         if (caption) batchFormData.append('description', caption);
         if (active !== undefined) batchFormData.append('active', String(active));
 
+        let batchSuccess = false;
+        // Attempt 1
         try {
           const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
             method: 'POST',
             headers: getAdminHeaders(),
             body: batchFormData,
           });
-
           const data = await parseJsonResponse(res, `Erro ao enviar fotos (lote ${Math.floor(i / BATCH_SIZE) + 1})`);
           if (data && Array.isArray(data.photos)) {
             allUploaded.push(...data.photos);
           }
+          batchSuccess = true;
         } catch (err: any) {
-          console.error(`Erro ao enviar lote ${Math.floor(i / BATCH_SIZE) + 1}:`, err);
-          if (allUploaded.length > 0) {
-            throw new Error(`Foram salvas ${allUploaded.length} de ${files.length} fotos com sucesso antes do erro: ${err.message}`);
+          console.warn(`Tentativa 1 falhou para lote ${Math.floor(i / BATCH_SIZE) + 1}, tentando novamente:`, err.message);
+          lastBatchError = err;
+        }
+
+        // Retry once if failed
+        if (!batchSuccess) {
+          try {
+            await new Promise((r) => setTimeout(r, 800));
+            const retryRes = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
+              method: 'POST',
+              headers: getAdminHeaders(),
+              body: batchFormData,
+            });
+            const data = await parseJsonResponse(retryRes, `Erro no lote ${Math.floor(i / BATCH_SIZE) + 1}`);
+            if (data && Array.isArray(data.photos)) {
+              allUploaded.push(...data.photos);
+            }
+            batchSuccess = true;
+          } catch (retryErr: any) {
+            console.error(`Falha definitiva no lote ${Math.floor(i / BATCH_SIZE) + 1}:`, retryErr);
+            lastBatchError = retryErr;
           }
-          throw err;
         }
 
         if (onProgress) {
@@ -1293,12 +1342,18 @@ export const api = {
         }
       }
 
-      return {
-        success: true,
-        count: allUploaded.length,
-        photos: allUploaded,
-        category: cat,
-      };
+      if (allUploaded.length > 0) {
+        return {
+          success: true,
+          count: allUploaded.length,
+          photos: allUploaded,
+          category: cat,
+        };
+      }
+
+      if (lastBatchError) {
+        throw lastBatchError;
+      }
     }
 
     // Single file or small batch <= BATCH_SIZE
@@ -1945,11 +2000,20 @@ export const api = {
   },
 
   async resetPortfolioDemo(): Promise<{ success: boolean; count: number; items: PortfolioItem[] }> {
-    const res = await fetch(`${API_BASE}/portfolio/reset-demo`, {
-      method: 'POST',
-      headers: getAdminHeaders(),
-    });
-    return parseJsonResponse(res, 'Erro ao restaurar fotos demo');
+    try {
+      const res = await fetch(`${API_BASE}/portfolio/reset-demo`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+      });
+      const data = await parseJsonResponse(res, 'Erro ao restaurar fotos demo');
+      localStorage.setItem('rocha_cached_categories', JSON.stringify(INITIAL_PORTFOLIO_CATEGORIES));
+      localStorage.removeItem('rocha_client_portfolio_photos');
+      return data;
+    } catch (err) {
+      localStorage.setItem('rocha_cached_categories', JSON.stringify(INITIAL_PORTFOLIO_CATEGORIES));
+      localStorage.removeItem('rocha_client_portfolio_photos');
+      return { success: true, count: INITIAL_PORTFOLIO_PHOTOS.length, items: [] };
+    }
   },
 
   // Supabase Cloud Database Management

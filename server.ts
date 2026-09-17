@@ -2805,12 +2805,29 @@ async function setupRoutes() {
   });
 
   // Reset to initial seed portfolio (Admin Only)
-  app.post('/api/portfolio/reset-demo', requireAdmin, (req: Request, res: Response) => {
-    db.portfolioCategories = [...INITIAL_PORTFOLIO_CATEGORIES];
-    db.portfolioPhotos = [...INITIAL_PORTFOLIO_PHOTOS];
-    syncPortfolioLegacy();
-    saveDatabase();
-    res.json({ success: true, count: db.portfolioPhotos.length });
+  app.post(['/api/portfolio/reset-demo', '/api/admin/portfolio/reset-demo'], requireAdmin, async (req: Request, res: Response) => {
+    try {
+      db.portfolioCategories = [...INITIAL_PORTFOLIO_CATEGORIES];
+      db.portfolioPhotos = [...INITIAL_PORTFOLIO_PHOTOS];
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      if (isSupabaseConfigured()) {
+        try {
+          for (const cat of INITIAL_PORTFOLIO_CATEGORIES) {
+            await syncCategoryToSupabase(cat);
+          }
+          await syncPortfolioPhotosToSupabase(INITIAL_PORTFOLIO_PHOTOS);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Reset Sync Warning]:', sbErr.message);
+        }
+      }
+
+      res.json({ success: true, count: db.portfolioPhotos.length });
+    } catch (err: any) {
+      console.error('[Reset Demo Error]:', err);
+      res.status(500).json({ error: err.message || 'Erro ao resetar dados de demonstração' });
+    }
   });
 
   // Explicit API 404 handler - prevents ANY /api route from falling through to HTML index.html
