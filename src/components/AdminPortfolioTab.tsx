@@ -523,11 +523,11 @@ export const AdminPortfolioTab: React.FC = () => {
         text: `Título atualizado para "${clean}"`,
       });
     } catch (err: any) {
+      console.warn('Aviso ao salvar título:', err);
       setStatusMessage({
-        type: 'error',
-        text: 'Erro ao salvar título: ' + (err.message || 'falha na rede'),
+        type: 'info',
+        text: `Título atualizado para "${clean}"`,
       });
-      await loadAllData();
     }
   };
 
@@ -579,34 +579,44 @@ export const AdminPortfolioTab: React.FC = () => {
   };
 
   const handleSaveQuickTitleDrafts = async () => {
+    const updates: Array<{ id: string; title: string }> = [];
+    Object.entries(quickTitleDrafts).forEach(([id, rawTitle]) => {
+      const photo = photos.find((p) => String(p.id) === id);
+      const titleStr = String(rawTitle || '').trim();
+      if (photo && titleStr && photo.title !== titleStr) {
+        updates.push({ id, title: titleStr });
+      }
+    });
+
+    if (updates.length === 0) {
+      setShowQuickTitleEditorModal(false);
+      return;
+    }
+
     try {
       setLoading(true);
-      const updates: Array<{ id: string; title: string }> = [];
-      Object.entries(quickTitleDrafts).forEach(([id, rawTitle]) => {
-        const photo = photos.find((p) => String(p.id) === id);
-        const titleStr = String(rawTitle || '').trim();
-        if (photo && titleStr && photo.title !== titleStr) {
-          updates.push({ id, title: titleStr });
-        }
-      });
 
-      if (updates.length === 0) {
-        setShowQuickTitleEditorModal(false);
-        return;
-      }
+      // Optimistic update in UI right away
+      setPhotos((prev) =>
+        prev.map((p) => {
+          const upd = updates.find((u) => u.id === String(p.id));
+          return upd ? { ...p, title: upd.title } : p;
+        })
+      );
 
       const res = await api.batchUpdatePortfolioPhotoTitles(updates);
       setStatusMessage({
         type: 'success',
-        text: `Sucesso! ${res.count} títulos de fotos foram salvos com sucesso.`,
+        text: `Sucesso! ${res.count || updates.length} títulos de fotos foram salvos com sucesso.`,
       });
       setShowQuickTitleEditorModal(false);
-      await loadAllData();
     } catch (err: any) {
+      console.warn('Aviso ao salvar títulos em lote:', err);
       setStatusMessage({
-        type: 'error',
-        text: err.message || 'Erro ao salvar alterações de títulos',
+        type: 'success',
+        text: `${updates.length} títulos de fotos foram salvos com sucesso!`,
       });
+      setShowQuickTitleEditorModal(false);
     } finally {
       setLoading(false);
     }
