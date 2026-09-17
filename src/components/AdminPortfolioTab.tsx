@@ -31,6 +31,9 @@ import {
   FileText,
   ClipboardList,
   CheckSquare,
+  Copy,
+  Terminal,
+  Zap,
 } from 'lucide-react';
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
 import { api } from '../services/api.js';
@@ -79,6 +82,8 @@ export const AdminPortfolioTab: React.FC = () => {
   const [quickTitleDrafts, setQuickTitleDrafts] = useState<Record<string, string>>({});
   const [pastedTitlesText, setPastedTitlesText] = useState('');
   const [showPasteBox, setShowPasteBox] = useState(false);
+  const [showExtractorHelper, setShowExtractorHelper] = useState(false);
+  const [copiedExtractorCode, setCopiedExtractorCode] = useState(false);
   const [inlineEditingPhotoId, setInlineEditingPhotoId] = useState<string | null>(null);
   const [inlineDraftTitle, setInlineDraftTitle] = useState<string>('');
 
@@ -87,6 +92,7 @@ export const AdminPortfolioTab: React.FC = () => {
   const [uploadCategory, setUploadCategory] = useState('');
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
   const [uploadActive, setUploadActive] = useState(true);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Edit Photo Modal
   const [editingPhoto, setEditingPhoto] = useState<PortfolioPhoto | null>(null);
@@ -107,6 +113,21 @@ export const AdminPortfolioTab: React.FC = () => {
   const loadAllData = async () => {
     try {
       setLoading(true);
+
+      // Automatically migrate any offline/localStorage client photos to the server database
+      try {
+        const syncRes = await api.syncClientPhotosToServer();
+        if (syncRes && syncRes.count > 0) {
+          console.info(`[Sync] ${syncRes.count} fotos locais foram migradas para o banco permanente.`);
+          setStatusMessage({
+            type: 'success',
+            text: `✨ ${syncRes.count} fotografia(s) que estavam salvas localmente foram sincronizadas com o servidor!`,
+          });
+        }
+      } catch (syncErr) {
+        console.warn('Sync client photos skipped:', syncErr);
+      }
+
       const results = await Promise.allSettled([
         api.getPortfolioCategories(true),
         api.getPortfolioPhotos({ activeOnly: false }),
@@ -253,12 +274,22 @@ export const AdminPortfolioTab: React.FC = () => {
 
     try {
       setLoading(true);
-      setStatusMessage({ type: 'info', text: `Enviando ${uploadFiles.length} foto(s) para "${uploadCategory}"...` });
+      setUploadProgress({ current: 0, total: uploadFiles.length });
+      setStatusMessage({ type: 'info', text: `Iniciando envio de ${uploadFiles.length} foto(s) para "${uploadCategory}"...` });
 
       const filesArray: File[] = Array.from(uploadFiles);
-      const res = await api.uploadPortfolioPhotos(filesArray, uploadCategory, {
-        active: uploadActive,
-      });
+      const res = await api.uploadPortfolioPhotos(
+        filesArray,
+        uploadCategory,
+        { active: uploadActive },
+        (current, total) => {
+          setUploadProgress({ current, total });
+          setStatusMessage({
+            type: 'info',
+            text: `Enviando fotografias: ${current} de ${total} (${Math.round((current / total) * 100)}%)... Não feche esta janela.`,
+          });
+        }
+      );
 
       setStatusMessage({
         type: 'success',
@@ -273,6 +304,7 @@ export const AdminPortfolioTab: React.FC = () => {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao fazer upload das fotos' });
     } finally {
       setLoading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -548,11 +580,70 @@ export const AdminPortfolioTab: React.FC = () => {
   };
 
   const handleApplyPastedTitles = () => {
-    if (!pastedTitlesText.trim()) return;
-    const lines = pastedTitlesText
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    const raw = pastedTitlesText.trim();
+    if (!raw) return;
+
+    let lines: string[] = [];
+
+    // Auto-detect if user pasted HTML / page source code from Ctrl+U
+    if (raw.includes('<') && (raw.includes('<img') || raw.includes('title=') || raw.includes('alt=') || raw.includes('<figure') || raw.includes('class=') || raw.includes('<!DOCTYPE') || raw.includes('<html'))) {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(raw, 'text/html');
+        const extracted: string[] = [];
+
+        // 1. First priority: Check for explicit photo titles/captions from portfolio items (e.g. .enh_port_title, [class*="port_title"], figcaption)
+        const specificTitleEls = doc.querySelectorAll(
+          '[class*="port_title"], [class*="enh_port"], [class*="portfolio_title"], [class*="photo_title"], [class*="gallery_title"], [class*="item_title"], figcaption, .cbp-title, .portfolio-item h3, .portfolio-item h4'
+        );
+        if (specificTitleEls.length > 0) {
+          specificTitleEls.forEach((el) => {
+            const t = (el.textContent || '').trim();
+            if (t && t.length > 1 && !extracted.includes(t)) {
+              extracted.push(t);
+            }
+          });
+        }
+
+        // 2. Second priority if no specific classes found: examine images, figures, and non-nav titles
+        if (extracted.length === 0) {
+          doc.querySelectorAll('img, figure, [data-title], [title], .photo, .gallery-item, .item').forEach((el) => {
+            // Ignore filter/nav buttons
+            if (el.matches('[data-filter], nav *, .menu *, .filter-button, .cbp-filter-item')) return;
+            let text = el.getAttribute('title') || 
+                       el.getAttribute('data-title') || 
+                       el.getAttribute('aria-label') || 
+                       (el.tagName === 'IMG' ? el.getAttribute('alt') : '') ||
+                       el.querySelector?.('figcaption, .title, .caption, [class*="title"], [class*="caption"], h3, h4, p')?.textContent || '';
+            text = (text || '').trim();
+            if (text && text.length > 2 && !['logo', 'icon', 'menu', 'banner', 'seta', 'arrow', 'whatsapp', 'instagram'].some(w => text.toLowerCase().includes(w))) {
+              if (!extracted.includes(text)) extracted.push(text);
+            }
+          });
+        }
+
+        if (extracted.length === 0) {
+          doc.querySelectorAll('figcaption, [class*="overlay"], [class*="caption"], [class*="title"]').forEach((el) => {
+            if (el.matches('[data-filter], nav *, .menu *')) return;
+            const t = (el.textContent || '').trim();
+            if (t && t.length > 2 && !extracted.includes(t)) extracted.push(t);
+          });
+        }
+
+        if (extracted.length > 0) {
+          lines = extracted;
+        }
+      } catch (domErr) {
+        console.warn('Erro ao parsear HTML colado:', domErr);
+      }
+    }
+
+    if (lines.length === 0) {
+      lines = raw
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    }
 
     if (lines.length === 0) return;
 
@@ -573,7 +664,7 @@ export const AdminPortfolioTab: React.FC = () => {
     setQuickTitleDrafts(updated);
     setStatusMessage({
       type: 'success',
-      text: `${appliedCount} títulos preenchidos automaticamente a partir da lista colada! Clique em Salvar para gravar.`,
+      text: `${appliedCount} títulos preenchidos automaticamente! Clique em Salvar para gravar.`,
     });
     setShowPasteBox(false);
   };
@@ -682,7 +773,18 @@ export const AdminPortfolioTab: React.FC = () => {
         paths.push((f as any).webkitRelativePath || f.name);
       }
 
-      const res = await api.importPortfolioFiles(files, paths, 'Geral', replaceDemo);
+      const res = await api.importPortfolioFiles(
+        files,
+        paths,
+        'Geral',
+        replaceDemo,
+        (current, total) => {
+          setStatusMessage({
+            type: 'info',
+            text: `Importando fotos da pasta: ${current} de ${total} (${Math.round((current / total) * 100)}%)...`,
+          });
+        }
+      );
       setStatusMessage({
         type: 'success',
         text: `Sucesso! ${res.count} fotos foram organizadas em suas respectivas categorias.`,
@@ -1731,20 +1833,47 @@ export const AdminPortfolioTab: React.FC = () => {
                 </label>
               </div>
 
+              {loading && uploadProgress && (
+                <div className="p-3 bg-[#171b22] border border-[#c99e64]/30 rounded-lg space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-[#c99e64] font-medium">
+                    <span>Enviando fotos em lotes seguros...</span>
+                    <span>
+                      {uploadProgress.current} de {uploadProgress.total} ({Math.round((uploadProgress.current / Math.max(1, uploadProgress.total)) * 100)}%)
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#0c0e11] rounded-full h-2 overflow-hidden border border-[#2a303c]">
+                    <div
+                      className="bg-gradient-to-r from-[#c99e64] to-[#ecc793] h-full transition-all duration-300 rounded-full"
+                      style={{
+                        width: `${Math.round((uploadProgress.current / Math.max(1, uploadProgress.total)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#8e95a2]">
+                    Processando com armazenamento persistente. Por favor, aguarde a conclusão.
+                  </p>
+                </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-4 border-t border-[#1e232b]">
                 <button
                   type="button"
                   onClick={() => setShowUploadModal(false)}
-                  className="px-4 py-2.5 bg-[#171b22] text-white rounded-lg hover:bg-[#20252f]"
+                  disabled={loading}
+                  className="px-4 py-2.5 bg-[#171b22] text-white rounded-lg hover:bg-[#20252f] disabled:opacity-50"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
-                  className="px-5 py-2.5 bg-[#c99e64] text-black font-bold uppercase tracking-wider rounded-lg hover:bg-[#d8ae74] shadow-md shadow-[#c99e64]/20"
+                  className="px-5 py-2.5 bg-[#c99e64] text-black font-bold uppercase tracking-wider rounded-lg hover:bg-[#d8ae74] shadow-md shadow-[#c99e64]/20 disabled:opacity-60"
                 >
-                  {loading ? 'Enviando...' : 'Subir Fotografias'}
+                  {loading
+                    ? uploadProgress
+                      ? `Enviando (${uploadProgress.current}/${uploadProgress.total})...`
+                      : 'Enviando...'
+                    : 'Subir Fotografias'}
                 </button>
               </div>
             </form>
@@ -2676,13 +2805,112 @@ export const AdminPortfolioTab: React.FC = () => {
             {/* Paste Box Area (Expandable) */}
             {showPasteBox && (
               <div className="p-4 bg-[#0a0d11] border-b border-[#222834] transition-all">
-                <div className="max-w-2xl">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Sparkles className="w-4 h-4 text-[#c99e64]" />
-                    <span className="text-xs font-semibold text-white">
-                      Cole a lista de nomes do seu site oficial ou bloco de notas (1 nome por linha):
-                    </span>
+                <div className="max-w-3xl">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-[#c99e64]" />
+                      <span className="text-xs font-semibold text-white">
+                        Cole a lista de nomes do seu site oficial ou bloco de notas (1 nome por linha):
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowExtractorHelper((prev) => !prev)}
+                      className="px-2.5 py-1 bg-[#181d26] hover:bg-[#222834] text-[#c99e64] hover:text-[#d8ae74] border border-[#c99e64]/30 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Zap className="w-3 h-3 text-[#c99e64]" />
+                      <span>{showExtractorHelper ? 'Ocultar Dica Extratora' : '⚡ Como copiar todos os nomes do site original em 2 seg?'}</span>
+                    </button>
                   </div>
+
+                  {/* Extractor Script Helper Instructions */}
+                  {showExtractorHelper && (
+                    <div className="mb-3 p-3.5 bg-[#11151c] border border-[#c99e64]/30 rounded-xl text-xs space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <p className="font-bold text-[#c99e64] flex items-center gap-1.5">
+                            <Terminal className="w-4 h-4" />
+                            Como pegar todos os nomes sem passar o mouse foto por foto:
+                          </p>
+
+                          {/* Dica 1: Ctrl+U (A mais fácil, funciona no Opera, Chrome, Edge) */}
+                          <div className="p-2.5 bg-black/40 rounded-lg border border-white/5 space-y-1">
+                            <p className="text-white font-semibold text-[11px] flex items-center gap-1.5 text-amber-300">
+                              ⭐ Opção 1 (Mais fácil de todas - Não precisa de F12 nem Console):
+                            </p>
+                            <ol className="list-decimal list-inside text-gray-300 space-y-0.5 text-[11px] leading-relaxed">
+                              <li>Abra a página do seu <strong>site original</strong> onde estão as fotos.</li>
+                              <li>Pressione <kbd className="px-1.5 py-0.5 bg-black rounded border border-gray-700 font-mono text-[10px] text-white">Ctrl + U</kbd> (isso abre o código-fonte da página).</li>
+                              <li>Aperte <kbd className="px-1.5 py-0.5 bg-black rounded border border-gray-700 font-mono text-[10px] text-white">Ctrl + A</kbd> (selecionar tudo) e depois <kbd className="px-1.5 py-0.5 bg-black rounded border border-gray-700 font-mono text-[10px] text-white">Ctrl + C</kbd> (copiar).</li>
+                              <li>Cole tudo aqui na caixa de texto abaixo! O nosso sistema lê o HTML e <strong>extrai os nomes das fotos automaticamente</strong>!</li>
+                            </ol>
+                          </div>
+
+                          {/* Dica 2: Opera / Chrome Console */}
+                          <div className="p-2.5 bg-black/20 rounded-lg border border-white/5 space-y-1">
+                            <p className="text-white font-semibold text-[11px]">
+                              Opção 2 (Via Console do Navegador):
+                            </p>
+                            <p className="text-gray-400 text-[10.5px]">
+                              ⚠️ <em>No Opera / Opera GX, a tecla <strong>F12</strong> ativa o "Botão do Pânico" (que fecha as abas). No Opera, use o botão direito do mouse ou o atalho alternativo:</em>
+                            </p>
+                            <ol className="list-decimal list-inside text-gray-300 space-y-0.5 text-[11px] leading-relaxed">
+                              <li>No site original, clique com o <strong>botão direito</strong> em qualquer lugar da tela e escolha <strong>Inspecionar</strong> (ou use <kbd className="px-1.5 py-0.5 bg-black rounded border border-gray-700 font-mono text-[10px] text-white">Ctrl + Shift + C</kbd>).</li>
+                              <li>Clique na aba <strong>Console</strong> lá em cima.</li>
+                              <li>Cole o código extrator ao lado e dê <kbd className="px-1.5 py-0.5 bg-black rounded border border-gray-700 font-mono text-[10px] text-white">Enter</kbd>. Todos os nomes serão copiados instantaneamente!</li>
+                            </ol>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const script = `(() => {
+  const titles = [];
+  document.querySelectorAll('img, figure, [data-title], [title], .photo, .gallery-item, .item, a[title]').forEach((el) => {
+    let text = el.getAttribute('title') || 
+               el.getAttribute('data-title') || 
+               el.getAttribute('aria-label') || 
+               (el.tagName === 'IMG' ? el.getAttribute('alt') : '') ||
+               el.querySelector?.('figcaption, .title, .caption, [class*="title"], [class*="caption"], h3, h4, p')?.innerText || '';
+    text = (text || '').trim();
+    if (text && text.length > 2 && !['logo', 'icon', 'menu', 'banner', 'seta', 'arrow', 'whatsapp', 'instagram'].some(w => text.toLowerCase().includes(w))) {
+      if (!titles.includes(text)) titles.push(text);
+    }
+  });
+  if (titles.length === 0) {
+    document.querySelectorAll('figcaption, [class*="overlay"], [class*="caption"], [class*="title"]').forEach((el) => {
+      const t = (el.innerText || '').trim();
+      if (t && t.length > 2 && !titles.includes(t)) titles.push(t);
+    });
+  }
+  const result = titles.join('\\n');
+  if (result) {
+    if (typeof copy === 'function') copy(result);
+    else navigator.clipboard.writeText(result);
+    alert('✅ Sucesso! ' + titles.length + ' nomes foram copiados para sua área de transferência!\\\\nAgora cole no seu painel.');
+  } else {
+    alert('Nenhum título identificado automaticamente.');
+  }
+})();`;
+                            navigator.clipboard.writeText(script);
+                            setCopiedExtractorCode(true);
+                            setTimeout(() => setCopiedExtractorCode(false), 3000);
+                          }}
+                          className={`px-3 py-2 rounded-lg text-xs font-bold shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
+                            copiedExtractorCode
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-[#c99e64] hover:bg-[#d8ae74] text-black shadow'
+                          }`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>{copiedExtractorCode ? 'Copiado!' : 'Copiar Código Extrator'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <textarea
                     rows={5}
                     value={pastedTitlesText}

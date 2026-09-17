@@ -1696,7 +1696,13 @@ async function setupRoutes() {
         const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
 
         // Calculate base sequential number and order
-        const photosInCat = db.portfolioPhotos.filter((p) => p.categoryId === category!.id);
+        const catNameLower = category.name.toLowerCase();
+        const photosInCat = db.portfolioPhotos.filter(
+          (p) =>
+            p.categoryId === category!.id ||
+            (p.categoryName && p.categoryName.toLowerCase() === catNameLower) ||
+            ((p as any).category && (p as any).category.toLowerCase() === catNameLower)
+        );
         let highestNum = 0;
         let highestOrder = 0;
         photosInCat.forEach((p) => {
@@ -2075,6 +2081,107 @@ async function setupRoutes() {
     } catch (err: any) {
       console.error('[Batch Delete Photos Error]:', err);
       return res.status(500).json({ error: err.message || 'Erro ao excluir fotografias em lote' });
+    }
+  });
+
+  // Sync client-side offline/localStorage photos to permanent server storage
+  app.post('/api/admin/portfolio/photos/sync-client', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { photos } = req.body;
+      if (!Array.isArray(photos) || photos.length === 0) {
+        return res.json({ success: true, count: 0, saved: [] });
+      }
+
+      const savedPhotos: PortfolioPhoto[] = [];
+      const existingIds = new Set(db.portfolioPhotos.map((p) => String(p.id)));
+
+      for (const clientPhoto of photos) {
+        if (!clientPhoto || !clientPhoto.title) continue;
+
+        let finalImageUrl = clientPhoto.imageUrl || '';
+        const catName = clientPhoto.categoryName || clientPhoto.category || 'Geral';
+        const safeCat = catName.replace(/[/\\?%*:|"<>]/g, '-').trim();
+
+        // If photo image is stored as base64 data URL, persist as a real file
+        if (finalImageUrl.startsWith('data:image/')) {
+          try {
+            const matches = finalImageUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+            if (matches) {
+              const ext = matches[1].replace('jpeg', 'jpg');
+              const buffer = Buffer.from(matches[2], 'base64');
+              const fileName = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+
+              if (isSupabaseConfigured()) {
+                const storagePath = `${toSlug(catName)}/${fileName}`;
+                const publicUrl = await uploadToSupabaseStorage(
+                  'portfolio',
+                  storagePath,
+                  buffer,
+                  `image/${matches[1]}`
+                );
+                if (publicUrl) finalImageUrl = publicUrl;
+              }
+
+              if (!finalImageUrl.startsWith('http')) {
+                const targetDir = path.join(PORTFOLIO_DIR, safeCat);
+                if (!fs.existsSync(targetDir)) {
+                  fs.mkdirSync(targetDir, { recursive: true });
+                }
+                fs.writeFileSync(path.join(targetDir, fileName), buffer);
+                finalImageUrl = `/portfolio/${encodeURIComponent(safeCat)}/${encodeURIComponent(fileName)}`;
+              }
+            }
+          } catch (b64Err: any) {
+            console.warn('[Sync Client Photo Base64 Error]:', b64Err.message);
+          }
+        }
+
+        const photoRecord: PortfolioPhoto = {
+          id: clientPhoto.id || `port-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          categoryId: clientPhoto.categoryId || `cat-${toSlug(catName)}`,
+          categoryName: catName,
+          number: clientPhoto.number || formatPhotoNumber(db.portfolioPhotos.length + 1),
+          order: clientPhoto.order || db.portfolioPhotos.length + 1,
+          imageUrl: finalImageUrl,
+          thumbnailUrl: finalImageUrl,
+          title: clientPhoto.title,
+          description: clientPhoto.description || clientPhoto.caption || `${catName} — Fotografia original`,
+          aspect: clientPhoto.aspect || 'portrait',
+          active: clientPhoto.active !== false,
+          featured: Boolean(clientPhoto.featured),
+          createdAt: clientPhoto.createdAt || new Date().toISOString(),
+        };
+
+        if (existingIds.has(String(photoRecord.id))) {
+          const idx = db.portfolioPhotos.findIndex((p) => String(p.id) === String(photoRecord.id));
+          if (idx !== -1) db.portfolioPhotos[idx] = photoRecord;
+        } else {
+          db.portfolioPhotos.push(photoRecord);
+          existingIds.add(String(photoRecord.id));
+        }
+
+        savedPhotos.push(photoRecord);
+      }
+
+      if (isSupabaseConfigured() && savedPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(savedPhotos);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Sync Client Photos Error]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        count: savedPhotos.length,
+        saved: savedPhotos,
+      });
+    } catch (err: any) {
+      console.error('[Sync Client Photos Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao sincronizar fotos do cliente' });
     }
   });
 

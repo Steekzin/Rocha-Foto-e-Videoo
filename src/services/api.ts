@@ -134,6 +134,14 @@ function removeClientPortfolioPhoto(id: string): void {
   }
 }
 
+function clearClientPortfolioPhotos(): void {
+  try {
+    localStorage.removeItem(CLIENT_STORAGE_PORTFOLIO_KEY);
+  } catch (err) {
+    console.warn('Erro ao limpar LocalStorage de fotos:', err);
+  }
+}
+
 function toSlug(text: string): string {
   return (text || '')
     .normalize('NFD')
@@ -1192,10 +1200,35 @@ export const api = {
     return normalizedServer;
   },
 
+  async syncClientPhotosToServer(): Promise<{ success: boolean; count: number; saved: PortfolioPhoto[] }> {
+    const localPhotos = getClientPortfolioPhotos();
+    if (!localPhotos || localPhotos.length === 0) {
+      return { success: true, count: 0, saved: [] };
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ photos: localPhotos }),
+      });
+
+      const data = await parseJsonResponse(res, 'Erro ao sincronizar fotos locais');
+      if (data && data.success) {
+        clearClientPortfolioPhotos();
+      }
+      return data;
+    } catch (err) {
+      console.warn('Falha ao sincronizar fotos do cliente com o servidor:', err);
+      return { success: false, count: 0, saved: [] };
+    }
+  },
+
   async uploadPortfolioPhotos(
     filesOrFormData: File[] | FormData,
     categoryName?: string,
-    extra?: { title?: string; caption?: string; active?: boolean }
+    extra?: { title?: string; caption?: string; active?: boolean },
+    onProgress?: (current: number, total: number) => void
   ): Promise<{
     success: boolean;
     count: number;
@@ -1208,9 +1241,7 @@ export const api = {
     let caption = extra?.caption;
     let active = extra?.active !== undefined ? extra.active : true;
 
-    let formData: FormData;
     if (filesOrFormData instanceof FormData) {
-      formData = filesOrFormData;
       const fList = filesOrFormData.getAll('files') as File[];
       files = fList.filter((f) => f instanceof File);
       cat = (filesOrFormData.get('category') as string) || (filesOrFormData.get('categoryId') as string) || cat;
@@ -1221,13 +1252,62 @@ export const api = {
       }
     } else {
       files = filesOrFormData;
-      formData = new FormData();
-      filesOrFormData.forEach((f) => formData.append('files', f));
-      if (categoryName) formData.append('category', categoryName);
-      if (extra?.title) formData.append('title', extra.title);
-      if (extra?.caption) formData.append('description', extra.caption);
-      if (extra?.active !== undefined) formData.append('active', String(extra.active));
     }
+
+    // When multiple files are uploaded, send them in small safe chunks of 3 files.
+    // This completely prevents 413 Payload Too Large and reverse proxy buffer limits,
+    // ensuring 30, 50, or 100+ photos upload smoothly with real progress tracking.
+    const BATCH_SIZE = 3;
+    if (files.length > BATCH_SIZE) {
+      const allUploaded: PortfolioPhoto[] = [];
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const batchFiles = files.slice(i, i + BATCH_SIZE);
+        const batchFormData = new FormData();
+        batchFiles.forEach((f) => batchFormData.append('files', f));
+        if (cat) batchFormData.append('category', cat);
+        if (title) batchFormData.append('title', title);
+        if (caption) batchFormData.append('description', caption);
+        if (active !== undefined) batchFormData.append('active', String(active));
+
+        try {
+          const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
+            method: 'POST',
+            headers: getAdminHeaders(),
+            body: batchFormData,
+          });
+
+          const data = await parseJsonResponse(res, `Erro ao enviar fotos (lote ${Math.floor(i / BATCH_SIZE) + 1})`);
+          if (data && Array.isArray(data.photos)) {
+            allUploaded.push(...data.photos);
+          }
+        } catch (err: any) {
+          console.error(`Erro ao enviar lote ${Math.floor(i / BATCH_SIZE) + 1}:`, err);
+          if (allUploaded.length > 0) {
+            throw new Error(`Foram salvas ${allUploaded.length} de ${files.length} fotos com sucesso antes do erro: ${err.message}`);
+          }
+          throw err;
+        }
+
+        if (onProgress) {
+          onProgress(Math.min(i + BATCH_SIZE, files.length), files.length);
+        }
+      }
+
+      return {
+        success: true,
+        count: allUploaded.length,
+        photos: allUploaded,
+        category: cat,
+      };
+    }
+
+    // Single file or small batch <= BATCH_SIZE
+    const formData = new FormData();
+    files.forEach((f) => formData.append('files', f));
+    if (cat) formData.append('category', cat);
+    if (title) formData.append('title', title);
+    if (caption) formData.append('description', caption);
+    if (active !== undefined) formData.append('active', String(active));
 
     try {
       const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
@@ -1236,7 +1316,11 @@ export const api = {
         body: formData,
       });
 
-      return await parseJsonResponse(res, 'Erro ao enviar fotografias');
+      const result = await parseJsonResponse(res, 'Erro ao enviar fotografias');
+      if (onProgress) {
+        onProgress(files.length, files.length);
+      }
+      return result;
     } catch (err: any) {
       console.warn('Falha no upload para o servidor, avaliando fallback cliente:', err);
 
@@ -1741,23 +1825,80 @@ export const api = {
     return parseJsonResponse(res, 'Erro ao importar arquivo ZIP.');
   },
 
-  async importPortfolioFiles(files: File[], paths: string[], defaultCategory: string = 'Geral', replaceDemo: boolean = false): Promise<{ success: boolean; count: number; categories: Record<string, number>; totalInPortfolio: number }> {
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append('files', files[i]);
-      if (paths[i]) {
-        formData.append('paths', paths[i]);
+  async importPortfolioFiles(
+    files: File[],
+    paths: string[],
+    defaultCategory: string = 'Geral',
+    replaceDemo: boolean = false,
+    onProgress?: (current: number, total: number) => void
+  ): Promise<{ success: boolean; count: number; categories: Record<string, number>; totalInPortfolio: number }> {
+    const BATCH_SIZE = 4;
+    if (files.length <= BATCH_SIZE) {
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+        if (paths[i]) {
+          formData.append('paths', paths[i]);
+        }
+      }
+      formData.append('category', defaultCategory);
+      formData.append('replaceDemo', String(replaceDemo));
+
+      const res = await fetch(`${API_BASE}/portfolio/import-files`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: formData,
+      });
+      const result = await parseJsonResponse(res, 'Erro ao importar arquivos.');
+      if (onProgress) onProgress(files.length, files.length);
+      return result;
+    }
+
+    let totalCount = 0;
+    const combinedCategories: Record<string, number> = {};
+    let lastTotal = 0;
+
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const chunkFiles = files.slice(i, i + BATCH_SIZE);
+      const chunkPaths = paths.slice(i, i + BATCH_SIZE);
+
+      const formData = new FormData();
+      for (let j = 0; j < chunkFiles.length; j++) {
+        formData.append('files', chunkFiles[j]);
+        if (chunkPaths[j]) {
+          formData.append('paths', chunkPaths[j]);
+        }
+      }
+      formData.append('category', defaultCategory);
+      // only replaceDemo on the very first batch
+      formData.append('replaceDemo', String(i === 0 ? replaceDemo : false));
+
+      const res = await fetch(`${API_BASE}/portfolio/import-files`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: formData,
+      });
+
+      const result = await parseJsonResponse(res, `Erro ao importar lote de arquivos (${Math.floor(i / BATCH_SIZE) + 1})`);
+      totalCount += (result.count || 0);
+      lastTotal = result.totalInPortfolio || (lastTotal + (result.count || 0));
+      if (result.categories) {
+        Object.entries(result.categories).forEach(([k, v]) => {
+          combinedCategories[k] = (combinedCategories[k] || 0) + Number(v);
+        });
+      }
+
+      if (onProgress) {
+        onProgress(Math.min(i + BATCH_SIZE, files.length), files.length);
       }
     }
-    formData.append('category', defaultCategory);
-    formData.append('replaceDemo', String(replaceDemo));
 
-    const res = await fetch(`${API_BASE}/portfolio/import-files`, {
-      method: 'POST',
-      headers: getAdminHeaders(),
-      body: formData,
-    });
-    return parseJsonResponse(res, 'Erro ao importar arquivos.');
+    return {
+      success: true,
+      count: totalCount,
+      categories: combinedCategories,
+      totalInPortfolio: lastTotal,
+    };
   },
 
   async scanLocalPortfolio(replaceDemo: boolean = false): Promise<{ success: boolean; count: number; message: string; totalInPortfolio: number }> {
