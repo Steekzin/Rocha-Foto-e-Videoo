@@ -14,6 +14,33 @@ import { PortfolioItem, PortfolioCategory } from '../types.js';
 import { api } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
 
+/**
+ * Higieniza e formata títulos para exibição profissional no portfólio.
+ * Remove códigos brutos de câmeras e arquivos como "imgi 8 (33)", "DSC_0012", etc.
+ */
+export function formatDisplayTitle(rawTitle: string, category?: string, number?: string): string {
+  if (!rawTitle) {
+    return category ? (number ? `${category} #${number}` : category) : 'Fotografia';
+  }
+
+  const trimmed = rawTitle.trim();
+
+  // Detect ugly camera/file names like "imgi 8 (33)", "imgi 10 P (68)", "DSC_0012", "IMG_4920", "foto (1)"
+  const isCameraRaw =
+    /^(imgi|img|dsc|_dsc|photo|foto|picture|p_)\s*[\d_\-\s]+(\([0-9]+\))?/i.test(trimmed) ||
+    /^imgi\s+\d+/i.test(trimmed) ||
+    /\([0-9]+\)$/.test(trimmed) ||
+    /^[a-z0-9_\-\s]{1,15}\([0-9]+\)$/i.test(trimmed);
+
+  if (isCameraRaw) {
+    const num = number || trimmed.replace(/\D+/g, '').slice(0, 4) || '001';
+    const formattedNum = String(num).padStart(3, '0');
+    return category ? `${category} #${formattedNum}` : `Foto #${formattedNum}`;
+  }
+
+  return trimmed;
+}
+
 interface PortfolioViewProps {
   onContactClick?: () => void;
 }
@@ -364,7 +391,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                     {/* Bottom Title & Caption */}
                     <div className="absolute bottom-3 left-3 right-3 text-left z-10">
                       <h3 className="text-sm font-serif-luxury text-white leading-snug group-hover:text-[#c99e64] transition-colors line-clamp-1">
-                        {item.title}
+                        {formatDisplayTitle(item.title, item.category, item.number)}
                       </h3>
                       {item.caption && (
                         <p className="text-[11px] text-[#9ca3af] mt-0.5 line-clamp-1">
@@ -452,7 +479,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                 )}
               </div>
               <h2 className="text-lg sm:text-xl font-serif-luxury text-white">
-                {currentLightboxItem.title}
+                {formatDisplayTitle(currentLightboxItem.title, currentLightboxItem.category, currentLightboxItem.number)}
               </h2>
               {currentLightboxItem.caption && (
                 <p className="text-xs text-[#9ca3af] mt-1 max-w-lg mx-auto">
@@ -464,7 +491,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
               <div className="mt-3 flex items-center justify-center gap-3">
                 <a
                   href={`https://wa.me/5538999999999?text=${encodeURIComponent(
-                    `Olá, Rocha Foto & Vídeo! Adorei a foto "${currentLightboxItem.title}" da categoria ${currentLightboxItem.category} (Ref: #${currentLightboxItem.number || '001'}). Gostaria de solicitar um orçamento para meu evento!`
+                    `Olá, Rocha Foto & Vídeo! Adorei a foto "${formatDisplayTitle(currentLightboxItem.title, currentLightboxItem.category, currentLightboxItem.number)}" da categoria ${currentLightboxItem.category} (Ref: #${currentLightboxItem.number || '001'}). Gostaria de solicitar um orçamento para meu evento!`
                   )}`}
                   target="_blank"
                   rel="noopener noreferrer"

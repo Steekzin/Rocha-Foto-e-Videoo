@@ -27,6 +27,10 @@ import {
   Hash,
   FolderInput,
   Image as ImageIcon,
+  ListOrdered,
+  FileText,
+  ClipboardList,
+  CheckSquare,
 } from 'lucide-react';
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
 import { api } from '../services/api.js';
@@ -62,6 +66,21 @@ export const AdminPortfolioTab: React.FC = () => {
   const [batchTargetCategory, setBatchTargetCategory] = useState<string>('');
   const [renumberTargetCategory, setRenumberTargetCategory] = useState<string | null>(null);
   const [showResetSeedModal, setShowResetSeedModal] = useState(false);
+
+  // Batch Rename State
+  const [showBatchRenameModal, setShowBatchRenameModal] = useState(false);
+  const [batchRenameMode, setBatchRenameMode] = useState<'category_seq' | 'custom_prefix' | 'number_only' | 'clean_camera'>('category_seq');
+  const [batchRenameCustomPrefix, setBatchRenameCustomPrefix] = useState('');
+  const [batchRenameScope, setBatchRenameScope] = useState<'selected' | 'current_category' | 'all'>('current_category');
+  const [batchRenameRenumber, setBatchRenameRenumber] = useState(true);
+
+  // Quick Title Spreadsheet Editor & Fast Paste State
+  const [showQuickTitleEditorModal, setShowQuickTitleEditorModal] = useState(false);
+  const [quickTitleDrafts, setQuickTitleDrafts] = useState<Record<string, string>>({});
+  const [pastedTitlesText, setPastedTitlesText] = useState('');
+  const [showPasteBox, setShowPasteBox] = useState(false);
+  const [inlineEditingPhotoId, setInlineEditingPhotoId] = useState<string | null>(null);
+  const [inlineDraftTitle, setInlineDraftTitle] = useState<string>('');
 
   // Photo CRUD Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -445,6 +464,149 @@ export const AdminPortfolioTab: React.FC = () => {
       await loadAllData();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao renumerar fotografias' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBatchRename = async () => {
+    try {
+      setLoading(true);
+      setShowBatchRenameModal(false);
+
+      const targetPhotoIds = batchRenameScope === 'selected' ? selectedPhotoIds : undefined;
+      const targetCategory =
+        batchRenameScope === 'current_category' && selectedCategoryFilter !== 'Todos'
+          ? selectedCategoryFilter
+          : undefined;
+
+      const res = await api.batchRenamePortfolioPhotos({
+        photoIds: targetPhotoIds,
+        categoryId: targetCategory,
+        mode: batchRenameMode,
+        customPrefix: batchRenameCustomPrefix.trim() || undefined,
+        renumber: batchRenameRenumber,
+      });
+
+      setStatusMessage({
+        type: 'success',
+        text: `Sucesso! ${res.count} fotos foram padronizadas com sucesso.`,
+      });
+      setSelectedPhotoIds([]);
+      await loadAllData();
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err.message || 'Erro ao padronizar nomes das fotografias',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveInlineTitle = async (photoId: string, newTitle: string) => {
+    setInlineEditingPhotoId(null);
+    const clean = newTitle.trim();
+    if (!clean) return;
+    const currentPhoto = photos.find((p) => String(p.id) === String(photoId));
+    if (!currentPhoto || currentPhoto.title === clean) return;
+
+    // Optimistic update in UI
+    setPhotos((prev) =>
+      prev.map((p) => (String(p.id) === String(photoId) ? { ...p, title: clean } : p))
+    );
+
+    try {
+      await api.batchUpdatePortfolioPhotoTitles([{ id: photoId, title: clean }]);
+      setStatusMessage({
+        type: 'success',
+        text: `Título atualizado para "${clean}"`,
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Erro ao salvar título: ' + (err.message || 'falha na rede'),
+      });
+      await loadAllData();
+    }
+  };
+
+  const handleOpenQuickTitleEditor = () => {
+    const drafts: Record<string, string> = {};
+    const listToEdit =
+      selectedPhotoIds.length > 0
+        ? photos.filter((p) => selectedPhotoIds.includes(String(p.id)))
+        : filteredPhotos;
+
+    listToEdit.forEach((p) => {
+      drafts[String(p.id)] = p.title || '';
+    });
+    setQuickTitleDrafts(drafts);
+    setPastedTitlesText('');
+    setShowPasteBox(false);
+    setShowQuickTitleEditorModal(true);
+  };
+
+  const handleApplyPastedTitles = () => {
+    if (!pastedTitlesText.trim()) return;
+    const lines = pastedTitlesText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    if (lines.length === 0) return;
+
+    const listToEdit =
+      selectedPhotoIds.length > 0
+        ? photos.filter((p) => selectedPhotoIds.includes(String(p.id)))
+        : filteredPhotos;
+
+    const updated = { ...quickTitleDrafts };
+    let appliedCount = 0;
+    listToEdit.forEach((p, index) => {
+      if (index < lines.length) {
+        updated[String(p.id)] = lines[index];
+        appliedCount++;
+      }
+    });
+
+    setQuickTitleDrafts(updated);
+    setStatusMessage({
+      type: 'success',
+      text: `${appliedCount} títulos preenchidos automaticamente a partir da lista colada! Clique em Salvar para gravar.`,
+    });
+    setShowPasteBox(false);
+  };
+
+  const handleSaveQuickTitleDrafts = async () => {
+    try {
+      setLoading(true);
+      const updates: Array<{ id: string; title: string }> = [];
+      Object.entries(quickTitleDrafts).forEach(([id, rawTitle]) => {
+        const photo = photos.find((p) => String(p.id) === id);
+        const titleStr = String(rawTitle || '').trim();
+        if (photo && titleStr && photo.title !== titleStr) {
+          updates.push({ id, title: titleStr });
+        }
+      });
+
+      if (updates.length === 0) {
+        setShowQuickTitleEditorModal(false);
+        return;
+      }
+
+      const res = await api.batchUpdatePortfolioPhotoTitles(updates);
+      setStatusMessage({
+        type: 'success',
+        text: `Sucesso! ${res.count} títulos de fotos foram salvos com sucesso.`,
+      });
+      setShowQuickTitleEditorModal(false);
+      await loadAllData();
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err.message || 'Erro ao salvar alterações de títulos',
+      });
     } finally {
       setLoading(false);
     }
@@ -859,6 +1021,29 @@ export const AdminPortfolioTab: React.FC = () => {
                 <Hash className="w-3.5 h-3.5 text-[#c99e64]" />
                 <span>Renumerar 001...</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setBatchRenameScope(selectedPhotoIds.length > 0 ? 'selected' : (selectedCategoryFilter !== 'Todos' ? 'current_category' : 'all'));
+                  setShowBatchRenameModal(true);
+                }}
+                title="Padronizar e limpar títulos de fotos em lote (remover imgi, DSC, etc.)"
+                className="px-3 py-1.5 bg-[#c99e64]/15 hover:bg-[#c99e64]/25 border border-[#c99e64]/50 text-xs text-[#c99e64] font-medium rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#c99e64]" />
+                <span>Padronizar Títulos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenQuickTitleEditor}
+                title="Editor Rápido de Nomes: edite todos os títulos em lista ou cole lista de nomes do seu site oficial"
+                className="px-3 py-1.5 bg-[#1a212d] hover:bg-[#232c3d] border border-[#303c52] text-xs text-white font-medium rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-[#c99e64]" />
+                <span>Editor Rápido de Nomes</span>
+              </button>
             </div>
           </div>
 
@@ -924,6 +1109,26 @@ export const AdminPortfolioTab: React.FC = () => {
                   className="px-2.5 py-1 text-xs text-gray-400 hover:text-white cursor-pointer"
                 >
                   Limpar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchRenameScope('selected');
+                    setShowBatchRenameModal(true);
+                  }}
+                  className="px-3 py-1 bg-[#c99e64]/20 hover:bg-[#c99e64]/35 text-[#c99e64] border border-[#c99e64]/40 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Padronizar ({selectedPhotoIds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenQuickTitleEditor}
+                  className="px-3 py-1 bg-[#1a212d] hover:bg-[#232c3d] text-white border border-[#303c52] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                  title="Editar nomes das fotos selecionadas em lista rápida"
+                >
+                  <ClipboardList className="w-3.5 h-3.5 text-[#c99e64]" />
+                  <span>Editar Nomes ({selectedPhotoIds.length})</span>
                 </button>
                 <button
                   type="button"
@@ -1058,9 +1263,40 @@ export const AdminPortfolioTab: React.FC = () => {
                           {photo.categoryName || photo.category || 'Geral'}
                         </span>
                       </div>
-                      <p className="text-xs font-medium text-white truncate" title={photo.title}>
-                        {photo.title}
-                      </p>
+                      {inlineEditingPhotoId === String(photo.id) ? (
+                        <div className="flex items-center gap-1 my-0.5">
+                          <input
+                            autoFocus
+                            type="text"
+                            value={inlineDraftTitle}
+                            onChange={(e) => setInlineDraftTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleSaveInlineTitle(String(photo.id), inlineDraftTitle);
+                              } else if (e.key === 'Escape') {
+                                setInlineEditingPhotoId(null);
+                              }
+                            }}
+                            onBlur={() => handleSaveInlineTitle(String(photo.id), inlineDraftTitle)}
+                            className="w-full bg-[#090b0e] border border-[#c99e64] text-xs text-white rounded px-1.5 py-0.5 focus:outline-none"
+                            placeholder="Nome da foto..."
+                          />
+                        </div>
+                      ) : (
+                        <div
+                          onClick={() => {
+                            setInlineEditingPhotoId(String(photo.id));
+                            setInlineDraftTitle(photo.title);
+                          }}
+                          className="group/title flex items-center justify-between gap-1 cursor-pointer hover:bg-white/5 px-1 py-0.5 -mx-1 rounded transition-colors"
+                          title="Clique para editar o nome rapidamente (Enter para salvar)"
+                        >
+                          <p className="text-xs font-medium text-white truncate group-hover/title:text-[#c99e64]">
+                            {photo.title}
+                          </p>
+                          <Edit2 className="w-2.5 h-2.5 text-gray-500 opacity-0 group-hover/title:opacity-100 flex-shrink-0" />
+                        </div>
+                      )}
                       {photo.caption && (
                         <p className="text-[10px] text-[#8e95a2] truncate mt-0.5" title={photo.caption}>
                           {photo.caption}
@@ -2121,6 +2357,471 @@ export const AdminPortfolioTab: React.FC = () => {
               >
                 {loading ? 'Renumerando...' : 'Confirmar Renumeração'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: PADRONIZAR TÍTULOS E NOMES EM LOTE */}
+      {/* ========================================================= */}
+      {showBatchRenameModal && (
+        <div
+          onClick={() => setShowBatchRenameModal(false)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-lg w-full p-6 shadow-2xl my-8 text-left"
+          >
+            <div className="flex items-center justify-between mb-3 border-b border-[#1e232b] pb-3">
+              <div className="flex items-center gap-2.5 text-[#c99e64]">
+                <Sparkles className="w-5 h-5" />
+                <h3 className="font-serif-luxury text-lg text-white">Padronização Rápida de Títulos</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBatchRenameModal(false)}
+                className="text-gray-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#9ca3af] mb-4 leading-relaxed">
+              Substitua nomes técnicos de arquivos de câmera (como <code className="text-amber-300 font-mono bg-black/50 px-1 py-0.5 rounded text-[11px]">imgi 8 (33)</code> ou <code className="text-amber-300 font-mono bg-black/50 px-1 py-0.5 rounded text-[11px]">DSC_0012</code>) por títulos limpos e profissionais em apenas 1 clique.
+            </p>
+
+            {/* Scope selection */}
+            <div className="mb-4 bg-[#0a0d11] p-3 rounded-xl border border-[#1e232c]">
+              <span className="block text-[11px] uppercase tracking-wider text-gray-400 font-bold mb-2">
+                Onde aplicar:
+              </span>
+              <div className="space-y-1.5 text-xs text-gray-200">
+                {selectedPhotoIds.length > 0 && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rename_scope"
+                      value="selected"
+                      checked={batchRenameScope === 'selected'}
+                      onChange={() => setBatchRenameScope('selected')}
+                      className="accent-[#c99e64]"
+                    />
+                    <span>Apenas nas <strong>{selectedPhotoIds.length} fotos selecionadas</strong></span>
+                  </label>
+                )}
+                {selectedCategoryFilter !== 'Todos' && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rename_scope"
+                      value="current_category"
+                      checked={batchRenameScope === 'current_category'}
+                      onChange={() => setBatchRenameScope('current_category')}
+                      className="accent-[#c99e64]"
+                    />
+                    <span>Em todas as fotos da categoria <strong>"{selectedCategoryFilter}"</strong> ({filteredPhotos.length} fotos)</span>
+                  </label>
+                )}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="rename_scope"
+                    value="all"
+                    checked={batchRenameScope === 'all'}
+                    onChange={() => setBatchRenameScope('all')}
+                    className="accent-[#c99e64]"
+                  />
+                  <span>Em todo o portfólio (<strong>{photos.length} fotos</strong>)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Format Presets */}
+            <div className="mb-4">
+              <span className="block text-[11px] uppercase tracking-wider text-gray-400 font-bold mb-2">
+                Formato do Título:
+              </span>
+              <div className="space-y-2">
+                <label
+                  className={`flex items-start gap-3 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                    batchRenameMode === 'category_seq'
+                      ? 'bg-[#c99e64]/10 border-[#c99e64]'
+                      : 'bg-[#161a21] border-[#222834] hover:border-gray-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="rename_mode"
+                    value="category_seq"
+                    checked={batchRenameMode === 'category_seq'}
+                    onChange={() => setBatchRenameMode('category_seq')}
+                    className="accent-[#c99e64] mt-1"
+                  />
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Categoria + Número (Recomendado)</span>
+                    <span className="text-[11px] text-gray-400 block mt-0.5">
+                      Gera: <span className="text-[#c99e64] font-medium">Casamento #001</span>, <span className="text-[#c99e64] font-medium">Casamento #002</span>, etc.
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-3 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                    batchRenameMode === 'custom_prefix'
+                      ? 'bg-[#c99e64]/10 border-[#c99e64]'
+                      : 'bg-[#161a21] border-[#222834] hover:border-gray-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="rename_mode"
+                    value="custom_prefix"
+                    checked={batchRenameMode === 'custom_prefix'}
+                    onChange={() => setBatchRenameMode('custom_prefix')}
+                    className="accent-[#c99e64] mt-1"
+                  />
+                  <div className="w-full">
+                    <span className="text-xs font-semibold text-white block">Prefixo Personalizado + Número</span>
+                    <span className="text-[11px] text-gray-400 block mt-0.5 mb-1.5">
+                      Ex: Digite o nome do ensaio ou casal
+                    </span>
+                    {batchRenameMode === 'custom_prefix' && (
+                      <input
+                        type="text"
+                        value={batchRenameCustomPrefix}
+                        onChange={(e) => setBatchRenameCustomPrefix(e.target.value)}
+                        placeholder="Ex: Ensaio Marina & Lucas"
+                        className="w-full px-2.5 py-1.5 bg-[#0d1015] border border-[#2c3340] rounded text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                      />
+                    )}
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-3 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                    batchRenameMode === 'clean_camera'
+                      ? 'bg-[#c99e64]/10 border-[#c99e64]'
+                      : 'bg-[#161a21] border-[#222834] hover:border-gray-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="rename_mode"
+                    value="clean_camera"
+                    checked={batchRenameMode === 'clean_camera'}
+                    onChange={() => setBatchRenameMode('clean_camera')}
+                    className="accent-[#c99e64] mt-1"
+                  />
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Limpeza Inteligente de Códigos de Câmera</span>
+                    <span className="text-[11px] text-gray-400 block mt-0.5">
+                      Remove códigos de cópia como (33), imgi, DSC e padroniza se for código cru.
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-3 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                    batchRenameMode === 'number_only'
+                      ? 'bg-[#c99e64]/10 border-[#c99e64]'
+                      : 'bg-[#161a21] border-[#222834] hover:border-gray-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="rename_mode"
+                    value="number_only"
+                    checked={batchRenameMode === 'number_only'}
+                    onChange={() => setBatchRenameMode('number_only')}
+                    className="accent-[#c99e64] mt-1"
+                  />
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Apenas Foto + Número</span>
+                    <span className="text-[11px] text-gray-400 block mt-0.5">
+                      Gera: <span className="text-[#c99e64] font-medium">Foto #001</span>, <span className="text-[#c99e64] font-medium">Foto #002</span>, etc.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Renumber checkbox */}
+            <div className="mb-5 pt-2 border-t border-[#1e232b]">
+              <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={batchRenameRenumber}
+                  onChange={(e) => setBatchRenameRenumber(e.target.checked)}
+                  className="accent-[#c99e64] rounded"
+                />
+                <span>Também renumerar a ordem sequencial (#001, #002, #003...)</span>
+              </label>
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end gap-2 pt-3 border-t border-[#1e232b]">
+              <button
+                type="button"
+                onClick={() => setShowBatchRenameModal(false)}
+                className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleBatchRename}
+                disabled={loading}
+                className="px-5 py-2 bg-[#c99e64] hover:bg-[#d8ae74] text-black font-bold rounded-lg text-xs transition-colors cursor-pointer flex items-center gap-1.5 shadow-md"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{loading ? 'Padronizando...' : 'Aplicar Padronização Agora'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: EDITOR RÁPIDO DE NOMES (PLANILHA / LISTA + COLAR) */}
+      {/* ========================================================= */}
+      {showQuickTitleEditorModal && (
+        <div
+          onClick={() => setShowQuickTitleEditorModal(false)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
+          >
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-[#1e232b] flex items-center justify-between bg-[#0e1115]">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-[#c99e64]/10 rounded-xl border border-[#c99e64]/30">
+                  <ClipboardList className="w-5 h-5 text-[#c99e64]" />
+                </div>
+                <div>
+                  <h3 className="font-serif-luxury text-lg text-white">Editor Rápido de Nomes</h3>
+                  <p className="text-xs text-[#9ca3af]">
+                    Altere os nomes de todas as fotos em formato de lista ou cole uma lista completa pronta.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowQuickTitleEditorModal(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Quick Actions Bar */}
+            <div className="p-3 sm:px-5 bg-[#171b22] border-b border-[#202633] flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPasteBox((prev) => !prev)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    showPasteBox
+                      ? 'bg-[#c99e64] text-black shadow-md'
+                      : 'bg-[#0f1217] hover:bg-[#202735] text-[#c99e64] border border-[#c99e64]/40'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{showPasteBox ? 'Fechar Caixa de Colar' : '📋 Colar Lista Pronta de Nomes'}</span>
+                </button>
+
+                <span className="text-xs text-gray-400 hidden sm:inline">
+                  {selectedPhotoIds.length > 0
+                    ? `Editando ${selectedPhotoIds.length} fotos selecionadas`
+                    : `Editando ${filteredPhotos.length} fotos exibidas`}
+                </span>
+              </div>
+
+              {/* Scope switch if selected */}
+              {selectedPhotoIds.length > 0 && (
+                <div className="text-xs text-gray-400 flex items-center gap-2">
+                  <span className="text-[#c99e64] font-medium">Filtro ativo: apenas selecionadas</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const drafts: Record<string, string> = {};
+                      filteredPhotos.forEach((p) => {
+                        drafts[String(p.id)] = p.title || '';
+                      });
+                      setQuickTitleDrafts(drafts);
+                      setSelectedPhotoIds([]);
+                    }}
+                    className="text-xs text-gray-400 hover:text-white underline cursor-pointer"
+                  >
+                    Editar todas ({filteredPhotos.length})
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Paste Box Area (Expandable) */}
+            {showPasteBox && (
+              <div className="p-4 bg-[#0a0d11] border-b border-[#222834] transition-all">
+                <div className="max-w-2xl">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Sparkles className="w-4 h-4 text-[#c99e64]" />
+                    <span className="text-xs font-semibold text-white">
+                      Cole a lista de nomes do seu site oficial ou bloco de notas (1 nome por linha):
+                    </span>
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={pastedTitlesText}
+                    onChange={(e) => setPastedTitlesText(e.target.value)}
+                    placeholder={`Entrada da Noiva\nTroca das Alianças\nVotos dos Noivos\nPrimeiro Beijo\nBrinde com Padrinhos\nCorte do Bolo`}
+                    className="w-full bg-[#12151a] border border-[#2b3240] rounded-xl p-3 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-[#c99e64] leading-relaxed"
+                  />
+                  <div className="flex items-center justify-between mt-2.5">
+                    <p className="text-[11px] text-gray-400">
+                      O sistema distribuirá cada linha como o título da foto correspondente, em ordem!
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleApplyPastedTitles}
+                      disabled={!pastedTitlesText.trim()}
+                      className="px-4 py-1.5 bg-[#c99e64] hover:bg-[#d8ae74] disabled:opacity-40 text-black font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-md flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Distribuir Nomes Linha por Linha</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Photos Table Editor */}
+            <div className="flex-1 overflow-y-auto p-3 sm:p-5">
+              <div className="overflow-hidden border border-[#20252e] rounded-xl bg-[#0e1014]">
+                <table className="w-full text-left text-xs text-gray-300">
+                  <thead className="bg-[#161a21] text-gray-400 border-b border-[#20252e] text-[11px] uppercase tracking-wider sticky top-0 z-10">
+                    <tr>
+                      <th className="py-2.5 px-3 w-12 text-center">#</th>
+                      <th className="py-2.5 px-3 w-16">Foto</th>
+                      <th className="py-2.5 px-3 w-32">Categoria</th>
+                      <th className="py-2.5 px-3">Título / Nome no Site</th>
+                      <th className="py-2.5 px-3 w-28 text-right">Atalhos</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1b1f27]">
+                    {(selectedPhotoIds.length > 0
+                      ? photos.filter((p) => selectedPhotoIds.includes(String(p.id)))
+                      : filteredPhotos
+                    ).map((photo, index) => {
+                      const photoIdStr = String(photo.id);
+                      const currentVal = quickTitleDrafts[photoIdStr] ?? photo.title;
+                      const hasChanged = currentVal !== photo.title;
+
+                      return (
+                        <tr
+                          key={photo.id}
+                          className={`hover:bg-white/[0.02] transition-colors ${
+                            hasChanged ? 'bg-[#c99e64]/[0.04]' : ''
+                          }`}
+                        >
+                          {/* Sequential Number */}
+                          <td className="py-2 px-3 text-center font-mono font-bold text-[#c99e64] text-[11px]">
+                            #{photo.number || (index + 1)}
+                          </td>
+
+                          {/* Thumbnail */}
+                          <td className="py-2 px-3">
+                            <img
+                              src={photo.imageUrl}
+                              alt={photo.title}
+                              className="w-10 h-10 object-cover rounded-lg border border-white/10"
+                            />
+                          </td>
+
+                          {/* Category */}
+                          <td className="py-2 px-3 text-[11px] font-medium text-gray-400 truncate max-w-[120px]">
+                            {photo.categoryName || photo.category || 'Geral'}
+                          </td>
+
+                          {/* Editable Title Input */}
+                          <td className="py-2 px-3">
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={currentVal}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setQuickTitleDrafts((prev) => ({
+                                    ...prev,
+                                    [photoIdStr]: val,
+                                  }));
+                                }}
+                                placeholder={`Ex: ${photo.categoryName || 'Foto'} #${photo.number || (index + 1)}`}
+                                className={`w-full px-3 py-1.5 rounded-lg text-xs text-white border transition-colors focus:outline-none ${
+                                  hasChanged
+                                    ? 'bg-[#1b1f28] border-[#c99e64] font-semibold text-[#c99e64]'
+                                    : 'bg-[#12151b] border-[#262c38] focus:border-[#c99e64]'
+                                }`}
+                              />
+                              {hasChanged && (
+                                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#c99e64] bg-[#c99e64]/20 px-1.5 py-0.5 rounded font-medium">
+                                  Modificado
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Quick Actions */}
+                          <td className="py-2 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuickTitleDrafts((prev) => ({
+                                  ...prev,
+                                  [photoIdStr]: `${photo.categoryName || photo.category || 'Foto'} #${photo.number || (index + 1)}`,
+                                }));
+                              }}
+                              title="Preencher com Categoria + Número"
+                              className="text-[10px] text-gray-400 hover:text-[#c99e64] bg-[#171b22] px-2 py-1 rounded border border-[#262c37] transition-colors cursor-pointer"
+                            >
+                              Padrão
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 sm:p-5 border-t border-[#1e232b] bg-[#0e1115] flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-gray-400">
+                <span>Dica: Use a tecla <kbd className="px-1.5 py-0.5 bg-black/60 border border-white/10 rounded font-mono text-[11px] text-gray-300">Tab</kbd> para pular rapidamente para a próxima foto.</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowQuickTitleEditorModal(false)}
+                  className="px-4 py-2 bg-[#171b22] hover:bg-[#202530] text-gray-300 rounded-lg text-xs transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveQuickTitleDrafts}
+                  disabled={loading}
+                  className="px-6 py-2 bg-[#c99e64] hover:bg-[#d8ae74] text-black font-bold rounded-lg text-xs transition-colors cursor-pointer shadow-md flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{loading ? 'Salvando Alterações...' : 'Salvar Todos os Nomes'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

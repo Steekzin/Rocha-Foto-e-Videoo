@@ -1573,6 +1573,54 @@ export const api = {
     return parseJsonResponse(res, 'Erro ao renumerar fotografias');
   },
 
+  async batchRenamePortfolioPhotos(params: {
+    photoIds?: string[];
+    categoryId?: string;
+    mode?: 'category_seq' | 'custom_prefix' | 'number_only' | 'clean_camera';
+    customPrefix?: string;
+    renumber?: boolean;
+  }): Promise<{
+    success: boolean;
+    count: number;
+    message: string;
+    photos: PortfolioPhoto[];
+  }> {
+    let categoryId = params.categoryId;
+    if (categoryId && categoryId !== 'Todos' && categoryId !== 'ALL') {
+      const cats = await this.getPortfolioCategories(true);
+      const found = cats.find(
+        (c) => c.id === categoryId || c.name.toLowerCase() === categoryId!.toLowerCase()
+      );
+      if (found) categoryId = found.id;
+    }
+
+    const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-rename`, {
+      method: 'POST',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        ...params,
+        categoryId: categoryId === 'Todos' || categoryId === 'ALL' ? undefined : categoryId,
+      }),
+    });
+    return parseJsonResponse(res, 'Erro ao padronizar nomes de fotografias');
+  },
+
+  async batchUpdatePortfolioPhotoTitles(
+    updates: Array<{ id: string; title: string; caption?: string }>
+  ): Promise<{
+    success: boolean;
+    count: number;
+    message: string;
+    photos: PortfolioPhoto[];
+  }> {
+    const res = await fetch(`${API_BASE}/admin/portfolio/photos/batch-update-titles`, {
+      method: 'POST',
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ updates }),
+    });
+    return parseJsonResponse(res, 'Erro ao atualizar títulos em lote');
+  },
+
   // Legacy Portfolio compatibility
   async getPortfolio(category?: string): Promise<PortfolioItem[]> {
     const url = category && category !== 'Todos' ? `${API_BASE}/portfolio?category=${encodeURIComponent(category)}` : `${API_BASE}/portfolio`;

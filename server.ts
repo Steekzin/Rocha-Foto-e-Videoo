@@ -972,8 +972,23 @@ async function setupRoutes() {
     return raw.charAt(0).toUpperCase() + raw.slice(1);
   }
 
-  function cleanTitle(fileName: string): string {
-    const withoutExt = fileName.replace(/\.[^/.]+$/, '');
+  function isCameraFileName(name: string): boolean {
+    const n = name.trim().toLowerCase();
+    // Pattern like "imgi 8 (33)", "img_1234", "dsc_0012", "img 10 p (68)", "p1010202", "sam_1234"
+    if (/^(imgi|img|dsc|_dsc|p|sam|dcim|photo|foto|picture)[\s_\-]*\d+/i.test(n)) return true;
+    if (/^imgi\b/i.test(n)) return true;
+    if (/\(\d+\)$/.test(n)) return true; // Ends with "(33)" or "(68)" Windows copy indicators
+    if (/^[a-z0-9_\-\s]{1,15}\(\d+\)$/i.test(n)) return true;
+    return false;
+  }
+
+  function cleanTitle(fileName: string, categoryName?: string, seqNumber?: string): string {
+    const withoutExt = fileName.replace(/\.[^/.]+$/, '').trim();
+    if (isCameraFileName(withoutExt)) {
+      const num = seqNumber || withoutExt.replace(/\D+/g, '').slice(0, 4) || '001';
+      const formattedNum = String(num).padStart(3, '0');
+      return categoryName ? `${categoryName} #${formattedNum}` : `Foto #${formattedNum}`;
+    }
     return withoutExt
       .replace(/[-_]/g, ' ')
       .replace(/\s+/g, ' ')
@@ -1020,7 +1035,7 @@ async function setupRoutes() {
       // Write original file with zero quality loss / no compression
       fs.writeFileSync(targetFilePath, entry.getData());
 
-      const itemTitle = cleanTitle(rawFileName) || `${category} ${idx + 1}`;
+      const itemTitle = cleanTitle(rawFileName, category, formatPhotoNumber(idx + 1));
       const imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
 
       categoryStats[category] = (categoryStats[category] || 0) + 1;
@@ -2234,6 +2249,139 @@ async function setupRoutes() {
     }
   });
 
+  // Batch Rename Portfolio Photos (Admin Only)
+  // Replaces ugly camera names (imgi 8 (33), DSC_001...) with elegant titles in 1 click
+  app.post('/api/admin/portfolio/photos/batch-rename', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const {
+        photoIds,
+        categoryId,
+        mode = 'category_seq', // 'category_seq' | 'custom_prefix' | 'number_only' | 'clean_camera'
+        customPrefix,
+        renumber = true,
+      } = req.body;
+
+      let targetPhotos = [...db.portfolioPhotos];
+
+      if (Array.isArray(photoIds) && photoIds.length > 0) {
+        const idSet = new Set(photoIds.map((id) => String(id)));
+        targetPhotos = targetPhotos.filter((p) => idSet.has(String(p.id)));
+      } else if (categoryId && categoryId !== 'Todos' && categoryId !== 'ALL') {
+        targetPhotos = targetPhotos.filter(
+          (p) => p.categoryId === categoryId || p.categoryName?.toLowerCase() === String(categoryId).toLowerCase()
+        );
+      }
+
+      if (targetPhotos.length === 0) {
+        return res.status(400).json({ error: 'Nenhuma fotografia encontrada para padronizar.' });
+      }
+
+      // Group by category to maintain clean sequential order per category
+      const photosByCategory: Record<string, PortfolioPhoto[]> = {};
+      targetPhotos.forEach((photo) => {
+        const cat = photo.categoryName || 'Geral';
+        if (!photosByCategory[cat]) photosByCategory[cat] = [];
+        photosByCategory[cat].push(photo);
+      });
+
+      const modifiedPhotos: PortfolioPhoto[] = [];
+
+      Object.entries(photosByCategory).forEach(([catName, catPhotos]) => {
+        catPhotos.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+        catPhotos.forEach((photo, idx) => {
+          const seqNum = formatPhotoNumber(idx + 1);
+          if (renumber) {
+            photo.number = seqNum;
+            photo.order = idx + 1;
+          }
+
+          const currentNum = photo.number || seqNum;
+
+          if (mode === 'category_seq') {
+            photo.title = `${photo.categoryName || catName} #${currentNum}`;
+          } else if (mode === 'custom_prefix') {
+            const prefix = (customPrefix || photo.categoryName || catName || 'Foto').trim();
+            photo.title = `${prefix} #${currentNum}`;
+          } else if (mode === 'number_only') {
+            photo.title = `Foto #${currentNum}`;
+          } else if (mode === 'clean_camera') {
+            photo.title = cleanTitle(photo.title, photo.categoryName || catName, currentNum);
+          }
+
+          modifiedPhotos.push(photo);
+        });
+      });
+
+      if (isSupabaseConfigured() && modifiedPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(modifiedPhotos);
+        } catch (sbErr: any) {
+          console.warn('[Supabase Batch Rename Sync Warning]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        count: modifiedPhotos.length,
+        message: `${modifiedPhotos.length} fotografias tiveram seus títulos padronizados com sucesso!`,
+        photos: targetPhotos,
+      });
+    } catch (err: any) {
+      console.error('[Batch Rename Photos Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao padronizar nomes de fotografias' });
+    }
+  });
+
+  // Batch update titles/captions directly (e.g. from quick spreadsheet or pasted list)
+  app.post('/api/admin/portfolio/photos/batch-update-titles', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { updates } = req.body;
+      if (!Array.isArray(updates) || updates.length === 0) {
+        return res.status(400).json({ error: 'Nenhuma alteração informada.' });
+      }
+
+      const updatedPhotos: PortfolioPhoto[] = [];
+      updates.forEach((item: { id: string; title?: string; caption?: string }) => {
+        const photo = db.portfolioPhotos.find((p) => String(p.id) === String(item.id));
+        if (photo) {
+          if (typeof item.title === 'string' && item.title.trim()) {
+            photo.title = item.title.trim();
+          }
+          if (typeof item.caption === 'string') {
+            photo.caption = item.caption.trim();
+            photo.description = item.caption.trim();
+          }
+          updatedPhotos.push({ ...photo });
+        }
+      });
+
+      if (isSupabaseConfigured() && updatedPhotos.length > 0) {
+        try {
+          await syncPortfolioPhotosToSupabase(updatedPhotos);
+        } catch (sbErr: any) {
+          console.error('[Supabase Batch Update Titles Error]:', sbErr.message);
+        }
+      }
+
+      syncPortfolioLegacy();
+      saveDatabase();
+
+      res.json({
+        success: true,
+        count: updatedPhotos.length,
+        message: `${updatedPhotos.length} títulos atualizados com sucesso!`,
+        photos: updatedPhotos,
+      });
+    } catch (err: any) {
+      console.error('[Batch Update Titles Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao atualizar títulos em lote' });
+    }
+  });
+
   // Portfolio Summary & Stats
   app.get('/api/portfolio/summary', (req: Request, res: Response) => {
     const summary: Record<string, number> = {};
@@ -2351,7 +2499,7 @@ async function setupRoutes() {
 
         categoryStats[categoryName] = (categoryStats[categoryName] || 0) + 1;
         const seqNumber = formatPhotoNumber(categoryStats[categoryName]);
-        const itemTitle = cleanTitle(rawFileName) || `${categoryName} ${seqNumber}`;
+        const itemTitle = cleanTitle(rawFileName, categoryName, seqNumber) || `${categoryName} #${seqNumber}`;
 
         const newPhoto: PortfolioPhoto = {
           id: `port-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
