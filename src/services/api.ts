@@ -1282,176 +1282,77 @@ export const api = {
     }
     files = optimizedFiles;
 
-    // When multiple files are uploaded, send them in small safe chunks of 2 files.
-    // This completely prevents 413 Payload Too Large and reverse proxy buffer limits,
-    // ensuring 22, 50, or 100+ photos upload smoothly with real progress tracking.
-    const BATCH_SIZE = 2;
-    if (files.length > BATCH_SIZE) {
-      const allUploaded: PortfolioPhoto[] = [];
-      let lastBatchError: any = null;
+    if (files.length === 0) {
+      throw new Error('Nenhuma fotografia selecionada para envio.');
+    }
 
-      for (let i = 0; i < files.length; i += BATCH_SIZE) {
-        const batchFiles = files.slice(i, i + BATCH_SIZE);
-        const batchFormData = new FormData();
-        batchFiles.forEach((f) => batchFormData.append('files', f));
-        if (cat) batchFormData.append('category', cat);
-        if (title) batchFormData.append('title', title);
-        if (caption) batchFormData.append('description', caption);
-        if (active !== undefined) batchFormData.append('active', String(active));
+    // Process files sequentially one-by-one:
+    // - Eliminates 413 Payload Too Large and reverse proxy buffer limits
+    // - Guarantees sequential numerical order (001, 002, 003...)
+    // - Provides real-time per-photo progress in the UI
+    // - Retries transient failures individually without discarding the entire batch
+    const allUploaded: PortfolioPhoto[] = [];
+    const failedFiles: { name: string; error: string }[] = [];
 
-        let batchSuccess = false;
-        // Attempt 1
+    for (let i = 0; i < files.length; i++) {
+      const currentFile = files[i];
+      const formData = new FormData();
+      formData.append('files', currentFile);
+      formData.append('category', cat);
+      formData.append('categoryId', cat);
+      if (title) formData.append('title', title);
+      if (caption) formData.append('description', caption);
+      if (active !== undefined) formData.append('active', String(active));
+
+      let photoSuccess = false;
+      let lastErr: any = null;
+
+      // Try upload up to 2 times with a brief pause on failure
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
             method: 'POST',
             headers: getAdminHeaders(),
-            body: batchFormData,
+            body: formData,
           });
-          const data = await parseJsonResponse(res, `Erro ao enviar fotos (lote ${Math.floor(i / BATCH_SIZE) + 1})`);
-          if (data && Array.isArray(data.photos)) {
+
+          const data = await parseJsonResponse(res, `Erro ao enviar fotografia "${currentFile.name}"`);
+          if (data && Array.isArray(data.photos) && data.photos.length > 0) {
             allUploaded.push(...data.photos);
           }
-          batchSuccess = true;
+          photoSuccess = true;
+          break;
         } catch (err: any) {
-          console.warn(`Tentativa 1 falhou para lote ${Math.floor(i / BATCH_SIZE) + 1}, tentando novamente:`, err.message);
-          lastBatchError = err;
-        }
-
-        // Retry once if failed
-        if (!batchSuccess) {
-          try {
-            await new Promise((r) => setTimeout(r, 800));
-            const retryRes = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
-              method: 'POST',
-              headers: getAdminHeaders(),
-              body: batchFormData,
-            });
-            const data = await parseJsonResponse(retryRes, `Erro no lote ${Math.floor(i / BATCH_SIZE) + 1}`);
-            if (data && Array.isArray(data.photos)) {
-              allUploaded.push(...data.photos);
-            }
-            batchSuccess = true;
-          } catch (retryErr: any) {
-            console.error(`Falha definitiva no lote ${Math.floor(i / BATCH_SIZE) + 1}:`, retryErr);
-            lastBatchError = retryErr;
+          lastErr = err;
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 600));
           }
         }
-
-        if (onProgress) {
-          onProgress(Math.min(i + BATCH_SIZE, files.length), files.length);
-        }
       }
 
-      if (allUploaded.length > 0) {
-        return {
-          success: true,
-          count: allUploaded.length,
-          photos: allUploaded,
-          category: cat,
-        };
+      if (!photoSuccess) {
+        console.warn(`[Upload] Falha ao enviar foto ${currentFile.name}:`, lastErr?.message || lastErr);
+        failedFiles.push({ name: currentFile.name, error: lastErr?.message || 'Falha no envio' });
       }
 
-      if (lastBatchError) {
-        throw lastBatchError;
-      }
-    }
-
-    // Single file or small batch <= BATCH_SIZE
-    const formData = new FormData();
-    files.forEach((f) => formData.append('files', f));
-    if (cat) formData.append('category', cat);
-    if (title) formData.append('title', title);
-    if (caption) formData.append('description', caption);
-    if (active !== undefined) formData.append('active', String(active));
-
-    try {
-      const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: formData,
-      });
-
-      const result = await parseJsonResponse(res, 'Erro ao enviar fotografias');
       if (onProgress) {
-        onProgress(files.length, files.length);
+        onProgress(i + 1, files.length);
       }
-      return result;
-    } catch (err: any) {
-      console.warn('Falha no upload para o servidor, avaliando fallback cliente:', err);
-
-      const isHtmlOrUnavailable =
-        err.message?.includes('HTML') ||
-        err.message?.includes('<!DOCTYPE') ||
-        err.message?.includes('Unexpected token') ||
-        err.message?.includes('404') ||
-        err.message?.includes('500') ||
-        err.message?.includes('Erro do servidor') ||
-        err.message?.includes('Failed to fetch') ||
-        err.message?.includes('NetworkError');
-
-      if (isHtmlOrUnavailable && files.length > 0) {
-        console.info('Executando fallback local para upload de fotos...');
-        const fallbackPhotos: PortfolioPhoto[] = [];
-
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          const dataUrl = await readFileAsDataUrl(file);
-          const seq = Date.now() + i;
-          const num = String(i + 1).padStart(3, '0');
-          const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
-
-          fallbackPhotos.push({
-            id: `client-port-${seq}`,
-            categoryId: `cat-${cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-            categoryName: cat,
-            number: num,
-            order: i + 1,
-            imageUrl: dataUrl,
-            title: title || cleanName || `${cat} #${num}`,
-            description: caption || `${cat} — Fotografia Rocha Foto & Vídeo`,
-            aspect: 'portrait',
-            active: active,
-            featured: false,
-            createdAt: new Date().toISOString(),
-          });
-        }
-
-        saveClientPortfolioPhotos(fallbackPhotos);
-
-        if (supabase) {
-          try {
-            for (const p of fallbackPhotos) {
-              await supabase.from('portfolio_photos').upsert({
-                id: p.id,
-                category_id: p.categoryId,
-                category_name: p.categoryName,
-                number: p.number,
-                order_num: p.order,
-                image_url: p.imageUrl,
-                thumbnail_url: p.thumbnailUrl || p.imageUrl,
-                title: p.title,
-                description: p.description || '',
-                aspect: p.aspect || 'portrait',
-                active: p.active !== false,
-                featured: Boolean(p.featured),
-                created_at: p.createdAt,
-              });
-            }
-          } catch (sbErr: any) {
-            console.warn('[Supabase Fallback Upload Warning]:', sbErr.message);
-          }
-        }
-
-        return {
-          success: true,
-          count: fallbackPhotos.length,
-          photos: fallbackPhotos,
-          category: cat,
-        };
-      }
-
-      throw err;
     }
+
+    // If at least one photo was uploaded successfully, return success
+    if (allUploaded.length > 0) {
+      return {
+        success: true,
+        count: allUploaded.length,
+        photos: allUploaded,
+        category: cat,
+      };
+    }
+
+    // If all failed, throw the detailed error
+    const firstErr = failedFiles[0]?.error || 'Erro ao enviar fotografias para o servidor';
+    throw new Error(firstErr);
   },
 
   async updatePortfolioPhoto(

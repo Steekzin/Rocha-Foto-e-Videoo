@@ -301,6 +301,7 @@ export const AdminPortfolioTab: React.FC = () => {
       setShowUploadModal(false);
       setUploadFiles(null);
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
+      setSelectedCategoryFilter(uploadCategory);
       await loadAllData();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao fazer upload das fotos' });

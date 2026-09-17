@@ -1716,10 +1716,18 @@ async function setupRoutes() {
 
         for (let idx = 0; idx < files.length; idx++) {
           const file = files[idx];
-          const rawFileName = path.basename(file.originalname);
+          const rawFileName = path.basename(file.originalname || `foto_${idx + 1}.jpg`);
           const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase();
           const photoId = `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
           let imageUrl = '';
+
+          let mimeType = file.mimetype;
+          if (!mimeType || mimeType === 'application/octet-stream') {
+            if (ext === 'png') mimeType = 'image/png';
+            else if (ext === 'webp') mimeType = 'image/webp';
+            else if (ext === 'avif') mimeType = 'image/avif';
+            else mimeType = 'image/jpeg';
+          }
 
           // 1. Upload to Supabase Storage (Bucket: portfolio)
           if (isSupabaseConfigured()) {
@@ -1728,7 +1736,7 @@ async function setupRoutes() {
               'portfolio',
               storagePath,
               file.buffer,
-              file.mimetype || 'image/jpeg'
+              mimeType
             );
             if (publicUrl) {
               imageUrl = publicUrl;
@@ -1752,7 +1760,6 @@ async function setupRoutes() {
 
           // 3. Fallback to base64
           if (!imageUrl) {
-            const mimeType = file.mimetype || 'image/jpeg';
             imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
           }
 
