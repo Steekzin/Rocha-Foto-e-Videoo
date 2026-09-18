@@ -1135,21 +1135,21 @@ export const api = {
       console.warn('Aviso ao buscar fotos do servidor (usando fallback no Supabase/local):', err.message);
     }
 
-    // Direct Supabase Fallback if serverPhotos returned empty or failed
-    if ((!serverPhotos || serverPhotos.length === 0) && supabase) {
+    // Direct Supabase Sync & Fallback: Merge Supabase photos so newly uploaded cloud photos always appear immediately
+    if (supabase) {
       try {
-        let query = supabase.from('portfolio_photos').select('*').order('order_num', { ascending: true });
+        let sbQuery = supabase.from('portfolio_photos').select('*').order('order_num', { ascending: true });
         if (params?.activeOnly) {
-          query = query.eq('active', true);
+          sbQuery = sbQuery.eq('active', true);
         } else if (params?.status === 'active') {
-          query = query.eq('active', true);
+          sbQuery = sbQuery.eq('active', true);
         } else if (params?.status === 'inactive') {
-          query = query.eq('active', false);
+          sbQuery = sbQuery.eq('active', false);
         }
 
-        const { data: sbPhotos, error } = await query;
+        const { data: sbPhotos, error } = await sbQuery;
         if (!error && sbPhotos && sbPhotos.length > 0) {
-          serverPhotos = sbPhotos.map((row: any) => ({
+          const directPhotos: PortfolioPhoto[] = sbPhotos.map((row: any) => ({
             id: row.id,
             categoryId: row.category_id,
             categoryName: row.category_name,
@@ -1166,6 +1166,16 @@ export const api = {
             featured: Boolean(row.featured),
             createdAt: row.created_at || new Date().toISOString(),
           }));
+
+          // Merge: prioritize Supabase rows while keeping any server-only rows
+          const directMap = new Map<string, PortfolioPhoto>();
+          directPhotos.forEach((p) => directMap.set(String(p.id), p));
+          (serverPhotos || []).forEach((p) => {
+            if (!directMap.has(String(p.id))) {
+              directMap.set(String(p.id), p);
+            }
+          });
+          serverPhotos = Array.from(directMap.values());
         }
       } catch (sbErr: any) {
         console.warn('Falha ao buscar fotos diretamente do Supabase:', sbErr.message);
@@ -1415,15 +1425,19 @@ export const api = {
               allUploaded.push(createdPhoto);
               photoSuccess = true;
 
-              // Fire-and-forget lightweight metadata notification to server
-              fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
-                method: 'POST',
-                headers: {
-                  ...getAdminHeaders(),
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ photos: [createdPhoto] }),
-              }).catch(() => {});
+              // Synchronize photo metadata to server memory/file DB
+              try {
+                await fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
+                  method: 'POST',
+                  headers: {
+                    ...getAdminHeaders(),
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ photos: [createdPhoto] }),
+                });
+              } catch (syncNotifyErr) {
+                console.warn('[Sync Notify Server Warning]:', syncNotifyErr);
+              }
             } else {
               console.warn('[Supabase DB Insert Warning]:', dbError.message);
             }

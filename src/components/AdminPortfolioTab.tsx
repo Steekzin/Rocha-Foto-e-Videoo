@@ -148,6 +148,8 @@ export const AdminPortfolioTab: React.FC = () => {
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
 
+  const [dataVersion, setDataVersion] = useState(0);
+
   // Load all categories and photos with fault-tolerant fallbacks
   const loadAllData = async () => {
     try {
@@ -177,9 +179,11 @@ export const AdminPortfolioTab: React.FC = () => {
       const photosList = results[1].status === 'fulfilled' ? results[1].value : [];
       const legacy = results[2].status === 'fulfilled' ? results[2].value : [];
 
-      setCategories(cats);
-      setPhotos(photosList);
-      setLegacyItems(legacy);
+      console.info(`[loadAllData] Carregadas ${photosList.length} fotos e ${cats.length} categorias.`);
+      setCategories([...cats]);
+      setPhotos([...photosList]);
+      setLegacyItems([...legacy]);
+      setDataVersion((v) => v + 1);
 
       if (!uploadCategory && cats.length > 0) {
         setUploadCategory(cats[0].name);
@@ -1426,10 +1430,13 @@ export const AdminPortfolioTab: React.FC = () => {
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            <div
+              key={`grid_${selectedCategoryFilter}_${dataVersion}_${photos.length}`}
+              className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
+            >
               {filteredPhotos.map((photo, index) => (
                 <div
-                  key={photo.id}
+                  key={`${photo.id}_${dataVersion}_${photo.number || index}`}
                   className={`group relative bg-[#0e1014] rounded-xl overflow-hidden border transition-all flex flex-col ${
                     selectedPhotoIds.includes(String(photo.id))
                       ? 'border-[#c99e64] ring-2 ring-[#c99e64]/50 shadow-lg shadow-[#c99e64]/10'
@@ -1444,7 +1451,18 @@ export const AdminPortfolioTab: React.FC = () => {
                       src={photo.imageUrl}
                       alt={photo.title}
                       loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-300"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (target.src !== photo.thumbnailUrl && photo.thumbnailUrl) {
+                          target.src = photo.thumbnailUrl;
+                        } else {
+                          target.onerror = null;
+                          target.src = 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=800&q=80';
+                        }
+                      }}
                     />
 
                     {/* Selection Checkbox & Number Badge */}
