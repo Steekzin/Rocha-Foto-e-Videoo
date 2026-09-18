@@ -1712,80 +1712,97 @@ async function setupRoutes() {
         });
 
         const uploadedPhotos: PortfolioPhoto[] = [];
-        const categorySlug = toSlug(category.name);
+        const uploadErrors: { file: string; error: string }[] = [];
+        const categorySlug = toSlug(category.name) || 'geral';
 
         for (let idx = 0; idx < files.length; idx++) {
           const file = files[idx];
-          const rawFileName = path.basename(file.originalname || `foto_${idx + 1}.jpg`);
-          const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase();
-          const photoId = `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
-          let imageUrl = '';
-
-          let mimeType = file.mimetype;
-          if (!mimeType || mimeType === 'application/octet-stream') {
-            if (ext === 'png') mimeType = 'image/png';
-            else if (ext === 'webp') mimeType = 'image/webp';
-            else if (ext === 'avif') mimeType = 'image/avif';
-            else mimeType = 'image/jpeg';
+          if (!file || !file.buffer || file.buffer.length === 0) {
+            continue;
           }
 
-          // 1. Upload to Supabase Storage (Bucket: portfolio)
-          if (isSupabaseConfigured()) {
-            const storagePath = `${categorySlug}/${Date.now()}_${idx}_${photoId}.${ext}`;
-            const publicUrl = await uploadToSupabaseStorage(
-              'portfolio',
-              storagePath,
-              file.buffer,
-              mimeType
-            );
-            if (publicUrl) {
-              imageUrl = publicUrl;
+          try {
+            const rawFileName = path.basename(file.originalname || `foto_${idx + 1}.jpg`);
+            const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+            const photoId = `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
+            let imageUrl = '';
+
+            let mimeType = file.mimetype;
+            if (!mimeType || mimeType === 'application/octet-stream') {
+              if (ext === 'png') mimeType = 'image/png';
+              else if (ext === 'webp') mimeType = 'image/webp';
+              else if (ext === 'avif') mimeType = 'image/avif';
+              else mimeType = 'image/jpeg';
             }
-          }
 
-          // 2. Fallback to physical disk
-          if (!imageUrl) {
-            try {
-              if (!fs.existsSync(targetDir)) {
-                fs.mkdirSync(targetDir, { recursive: true });
+            // 1. Upload to Supabase Storage (Bucket: portfolio)
+            if (isSupabaseConfigured()) {
+              try {
+                const storagePath = `${categorySlug}/${Date.now()}_${idx}_${photoId}.${ext}`;
+                const publicUrl = await uploadToSupabaseStorage(
+                  'portfolio',
+                  storagePath,
+                  file.buffer,
+                  mimeType
+                );
+                if (publicUrl) {
+                  imageUrl = publicUrl;
+                }
+              } catch (sbStorageErr: any) {
+                console.warn('[Supabase Storage Warning]:', sbStorageErr.message);
               }
-              const safeFileName = `${Date.now()}_${idx}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
-              const targetFilePath = path.join(targetDir, safeFileName);
-              fs.writeFileSync(targetFilePath, file.buffer);
-              imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
-            } catch (diskErr: any) {
-              console.warn('Physical disk write skipped:', diskErr.message);
             }
+
+            // 2. Fallback to physical disk
+            if (!imageUrl) {
+              try {
+                if (!fs.existsSync(targetDir)) {
+                  fs.mkdirSync(targetDir, { recursive: true });
+                }
+                const safeFileName = `${Date.now()}_${idx}_${rawFileName.replace(/[/\\?%*:|"<>]/g, '_')}`;
+                const targetFilePath = path.join(targetDir, safeFileName);
+                fs.writeFileSync(targetFilePath, file.buffer);
+                imageUrl = `/portfolio/${encodeURIComponent(safeCategoryFolder)}/${encodeURIComponent(safeFileName)}`;
+              } catch (diskErr: any) {
+                console.warn('Physical disk write skipped:', diskErr.message);
+              }
+            }
+
+            // 3. Fallback to base64
+            if (!imageUrl) {
+              imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+            }
+
+            const currentSeq = highestNum + uploadedPhotos.length + 1;
+            const formattedNumber = formatPhotoNumber(currentSeq);
+            const autoTitle = `${category.name} #${formattedNumber}`;
+            const autoDesc = `${category.name} — Fotografia original Rocha Foto & Vídeo`;
+
+            const newPhoto: PortfolioPhoto = {
+              id: photoId,
+              categoryId: category.id,
+              categoryName: category.name,
+              number: formattedNumber,
+              order: highestOrder + uploadedPhotos.length + 1,
+              imageUrl,
+              thumbnailUrl: imageUrl,
+              title: req.body.title && req.body.title.trim() ? req.body.title.trim() : autoTitle,
+              description: req.body.description && req.body.description.trim() ? req.body.description.trim() : autoDesc,
+              aspect: 'portrait',
+              active: req.body.active !== 'false' && req.body.active !== false,
+              featured: false,
+              createdAt: new Date().toISOString(),
+            };
+
+            uploadedPhotos.push(newPhoto);
+            db.portfolioPhotos.push(newPhoto);
+          } catch (fileErr: any) {
+            console.error(`[Upload error on file ${idx}]:`, fileErr);
+            uploadErrors.push({
+              file: file?.originalname || `arquivo_${idx + 1}`,
+              error: fileErr.message || 'Erro ao processar imagem',
+            });
           }
-
-          // 3. Fallback to base64
-          if (!imageUrl) {
-            imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
-          }
-
-          const currentSeq = highestNum + idx + 1;
-          const formattedNumber = formatPhotoNumber(currentSeq);
-          const autoTitle = `${category.name} #${formattedNumber}`;
-          const autoDesc = `${category.name} — Fotografia original Rocha Foto & Vídeo`;
-
-          const newPhoto: PortfolioPhoto = {
-            id: photoId,
-            categoryId: category.id,
-            categoryName: category.name,
-            number: formattedNumber,
-            order: highestOrder + idx + 1,
-            imageUrl,
-            thumbnailUrl: imageUrl,
-            title: req.body.title && req.body.title.trim() ? req.body.title.trim() : autoTitle,
-            description: req.body.description && req.body.description.trim() ? req.body.description.trim() : autoDesc,
-            aspect: 'portrait',
-            active: req.body.active !== 'false' && req.body.active !== false,
-            featured: false,
-            createdAt: new Date().toISOString(),
-          };
-
-          uploadedPhotos.push(newPhoto);
-          db.portfolioPhotos.push(newPhoto);
         }
 
         // Persist to Supabase Database
@@ -1800,11 +1817,19 @@ async function setupRoutes() {
         syncPortfolioLegacy();
         saveDatabase();
 
+        if (uploadedPhotos.length === 0 && uploadErrors.length > 0) {
+          return res.status(400).json({
+            error: uploadErrors[0].error || 'Não foi possível processar os arquivos enviados.',
+            details: uploadErrors,
+          });
+        }
+
         return res.status(201).json({
           success: true,
           count: uploadedPhotos.length,
           photos: uploadedPhotos,
           category: category.name,
+          errors: uploadErrors.length > 0 ? uploadErrors : undefined,
         });
       } catch (err: any) {
         console.error('[Photo Upload Error]:', err);

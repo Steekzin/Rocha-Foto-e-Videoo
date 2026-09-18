@@ -93,14 +93,27 @@ export async function optimizePhotoForWeb(
 
           canvas.toBlob(
             (blob) => {
-              if (blob && (blob.size < file.size || width < img.width)) {
-                const nameBase = file.name.replace(/\.[^/.]+$/, '').replace(/[/\\?%*:|"<>]/g, '_');
-                const optimizedFile = new File([blob], `${nameBase}.jpg`, {
-                  type: 'image/jpeg',
-                  lastModified: Date.now(),
-                });
-                resolve(optimizedFile);
-              } else {
+              try {
+                if (blob && (blob.size < file.size || width < img.width)) {
+                  const nameBase = file.name.replace(/\.[^/.]+$/, '').replace(/[/\\?%*:|"<>]/g, '_') || 'foto';
+                  let optimizedFile: File;
+                  try {
+                    optimizedFile = new File([blob], `${nameBase}.jpg`, {
+                      type: 'image/jpeg',
+                      lastModified: Date.now(),
+                    });
+                  } catch {
+                    // Fallback for browsers/environments where File constructor with Blob fails
+                    const blobWithProps = blob as any;
+                    blobWithProps.name = `${nameBase}.jpg`;
+                    blobWithProps.lastModified = Date.now();
+                    optimizedFile = blobWithProps as File;
+                  }
+                  resolve(optimizedFile);
+                } else {
+                  resolve(file);
+                }
+              } catch {
                 resolve(file);
               }
             },
@@ -130,5 +143,23 @@ export async function optimizePhotoForWeb(
         resolve(file);
       }
     }
+  });
+}
+
+/**
+ * Converts a File or Blob to a base64 Data URL for failover synchronization.
+ */
+export function fileToBase64(file: File | Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Falha ao converter arquivo em base64.'));
+      }
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
   });
 }

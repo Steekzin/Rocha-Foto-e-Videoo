@@ -12,7 +12,7 @@ import {
 } from '../types.js';
 import { supabase } from './supabaseClient.js';
 import { INITIAL_PORTFOLIO_CATEGORIES, INITIAL_PORTFOLIO_PHOTOS } from '../data/defaultPortfolio.js';
-import { optimizePhotoForWeb } from '../utils/imageOptimizer.js';
+import { optimizePhotoForWeb, fileToBase64 } from '../utils/imageOptimizer.js';
 
 export interface DashboardStats {
   totalCategories: number;
@@ -1296,18 +1296,18 @@ export const api = {
 
     for (let i = 0; i < files.length; i++) {
       const currentFile = files[i];
+      let photoSuccess = false;
+      let lastErr: any = null;
+
+      // Channel 1: High-Speed Multipart Upload with Text Fields First
       const formData = new FormData();
-      formData.append('files', currentFile);
       formData.append('category', cat);
       formData.append('categoryId', cat);
       if (title) formData.append('title', title);
       if (caption) formData.append('description', caption);
       if (active !== undefined) formData.append('active', String(active));
+      formData.append('files', currentFile);
 
-      let photoSuccess = false;
-      let lastErr: any = null;
-
-      // Try upload up to 2 times with a brief pause on failure
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
@@ -1316,17 +1316,62 @@ export const api = {
             body: formData,
           });
 
-          const data = await parseJsonResponse(res, `Erro ao enviar fotografia "${currentFile.name}"`);
-          if (data && Array.isArray(data.photos) && data.photos.length > 0) {
-            allUploaded.push(...data.photos);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && Array.isArray(data.photos) && data.photos.length > 0) {
+              allUploaded.push(...data.photos);
+              photoSuccess = true;
+              break;
+            }
+          } else {
+            const errText = await res.text().catch(() => '');
+            lastErr = new Error(`Status ${res.status}: ${errText.slice(0, 100)}`);
           }
-          photoSuccess = true;
-          break;
         } catch (err: any) {
           lastErr = err;
           if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 600));
+            await new Promise((resolve) => setTimeout(resolve, 400));
           }
+        }
+      }
+
+      // Channel 2: Automatic Failover via Structured Base64 Sync
+      // If multipart upload experienced an error (e.g. 500 or network glitch),
+      // this channel bypasses proxy multipart parsers and guarantees persistence.
+      if (!photoSuccess) {
+        try {
+          console.info(`[Upload] Ativando canal de recuperação failover para "${currentFile.name}"...`);
+          const base64Data = await fileToBase64(currentFile);
+          const fallbackPhotoPayload = {
+            id: `port-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+            title: title || `${cat} #${String(allUploaded.length + 1).padStart(3, '0')}`,
+            categoryName: cat,
+            category: cat,
+            imageUrl: base64Data,
+            active: active !== undefined ? active : true,
+          };
+
+          const syncRes = await fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
+            method: 'POST',
+            headers: {
+              ...getAdminHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              photos: [fallbackPhotoPayload],
+            }),
+          });
+
+          if (syncRes.ok) {
+            const syncData = await syncRes.json();
+            if (syncData && Array.isArray(syncData.saved) && syncData.saved.length > 0) {
+              allUploaded.push(...syncData.saved);
+              photoSuccess = true;
+              console.info(`[Upload] Foto "${currentFile.name}" salva com sucesso pelo canal failover.`);
+            }
+          }
+        } catch (failoverErr: any) {
+          console.warn(`[Upload Failover Warning]:`, failoverErr.message);
         }
       }
 

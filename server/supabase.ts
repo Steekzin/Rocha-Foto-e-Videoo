@@ -499,19 +499,35 @@ export async function uploadToSupabaseStorage(
 ): Promise<string | null> {
   const client = getSupabase();
   if (!client) return null;
+
+  // Sanitize path (strip leading slash, ensure clean segments)
+  const cleanPath = storagePath
+    .replace(/^\/+/, '')
+    .split('/')
+    .map((seg) => seg.replace(/[/\\?%*:|"<>]/g, '_').trim())
+    .filter(Boolean)
+    .join('/');
+
   try {
-    const { data, error } = await client.storage.from(bucket).upload(storagePath, buffer, {
+    // 12-second safety timeout to avoid hanging reverse-proxy connections
+    const uploadPromise = client.storage.from(bucket).upload(cleanPath, buffer, {
       contentType: contentType || 'image/jpeg',
       upsert: true,
     });
-    if (error) {
-      console.error(`[Supabase Storage] Erro ao enviar para ${bucket}/${storagePath}:`, error.message);
+
+    const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout de 12s ao enviar para Supabase Storage')), 12000)
+    );
+
+    const result = (await Promise.race([uploadPromise, timeoutPromise])) as any;
+    if (result.error) {
+      console.error(`[Supabase Storage] Erro ao enviar para ${bucket}/${cleanPath}:`, result.error.message);
       return null;
     }
-    const { data: publicData } = client.storage.from(bucket).getPublicUrl(storagePath);
+    const { data: publicData } = client.storage.from(bucket).getPublicUrl(cleanPath);
     return publicData?.publicUrl || null;
   } catch (err: any) {
-    console.error(`[Supabase Storage] Exceção ao enviar para ${bucket}/${storagePath}:`, err.message);
+    console.error(`[Supabase Storage] Exceção ao enviar para ${bucket}/${cleanPath}:`, err.message);
     return null;
   }
 }

@@ -93,8 +93,26 @@ export const AdminPortfolioTab: React.FC = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadCategory, setUploadCategory] = useState('');
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
+  const [selectedPhotoFiles, setSelectedPhotoFiles] = useState<File[]>([]);
+  const [modalDragOver, setModalDragOver] = useState(false);
+  const [currentUploadingFileName, setCurrentUploadingFileName] = useState<string>('');
   const [uploadActive, setUploadActive] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+
+  const getNextNumberForCategory = (catName: string) => {
+    if (!catName) return '001';
+    const photosInCat = photos.filter(
+      (p) =>
+        (p.categoryName && p.categoryName.toLowerCase() === catName.toLowerCase()) ||
+        ((p as any).category && (p as any).category.toLowerCase() === catName.toLowerCase())
+    );
+    let highest = 0;
+    photosInCat.forEach((p) => {
+      const n = parseInt(p.number, 10);
+      if (!isNaN(n) && n > highest) highest = n;
+    });
+    return String(highest + 1).padStart(3, '0');
+  };
 
   // Edit Photo Modal
   const [editingPhoto, setEditingPhoto] = useState<PortfolioPhoto | null>(null);
@@ -263,9 +281,27 @@ export const AdminPortfolioTab: React.FC = () => {
   // -------------------------------------------------------------
   // PHOTO ACTIONS
   // -------------------------------------------------------------
+  const handleAddModalFiles = (newFiles: FileList | File[] | null) => {
+    if (!newFiles) return;
+    const valid = Array.from(newFiles).filter(
+      (f) => (f.type && f.type.startsWith('image/')) || /\.(jpe?g|png|webp|avif)$/i.test(f.name)
+    );
+    if (valid.length === 0) return;
+    setSelectedPhotoFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}_${f.size}`));
+      const fresh = valid.filter((f) => !existing.has(`${f.name}_${f.size}`));
+      return [...prev, ...fresh];
+    });
+  };
+
+  const handleRemoveModalFile = (index: number) => {
+    setSelectedPhotoFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleUploadPhotos = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!uploadFiles || uploadFiles.length === 0) {
+    const filesArray = selectedPhotoFiles.length > 0 ? selectedPhotoFiles : Array.from(uploadFiles || []);
+    if (filesArray.length === 0) {
       setStatusMessage({ type: 'error', text: 'Selecione pelo menos uma fotografia para upload.' });
       return;
     }
@@ -276,30 +312,37 @@ export const AdminPortfolioTab: React.FC = () => {
 
     try {
       setLoading(true);
-      setUploadProgress({ current: 0, total: uploadFiles.length });
-      setStatusMessage({ type: 'info', text: `Iniciando envio de ${uploadFiles.length} foto(s) para "${uploadCategory}"...` });
+      setUploadProgress({ current: 0, total: filesArray.length });
+      if (filesArray[0]) {
+        setCurrentUploadingFileName(filesArray[0].name);
+      }
+      setStatusMessage({ type: 'info', text: `Iniciando envio de ${filesArray.length} foto(s) para "${uploadCategory}"...` });
 
-      const filesArray: File[] = Array.from(uploadFiles);
       const res = await api.uploadPortfolioPhotos(
         filesArray,
         uploadCategory,
         { active: uploadActive },
         (current, total) => {
           setUploadProgress({ current, total });
+          if (filesArray[current - 1]) {
+            setCurrentUploadingFileName(filesArray[current - 1].name);
+          }
           setStatusMessage({
             type: 'info',
-            text: `Enviando fotografias: ${current} de ${total} (${Math.round((current / total) * 100)}%)... Não feche esta janela.`,
+            text: `Enviando fotos: ${current} de ${total} (${Math.round((current / total) * 100)}%)...`,
           });
         }
       );
 
       setStatusMessage({
         type: 'success',
-        text: `Sucesso! ${res.count} fotografia(s) enviada(s) para "${uploadCategory}" com numeração sequencial automática.`,
+        text: `✨ Sucesso! ${res.count} fotografia(s) adicionada(s) à categoria "${uploadCategory}" com numeração sequencial automática.`,
       });
 
       setShowUploadModal(false);
+      setSelectedPhotoFiles([]);
       setUploadFiles(null);
+      setCurrentUploadingFileName('');
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
       setSelectedCategoryFilter(uploadCategory);
       await loadAllData();
@@ -308,6 +351,7 @@ export const AdminPortfolioTab: React.FC = () => {
     } finally {
       setLoading(false);
       setUploadProgress(null);
+      setCurrentUploadingFileName('');
     }
   };
 
@@ -1845,37 +1889,63 @@ export const AdminPortfolioTab: React.FC = () => {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL: UPLOAD DE FOTOS (MULTIPLE FILES) */}
+      {/* MODAL: UPLOAD DE FOTOS (PREVIEWS, DRAG & DROP, MULTI-SELECT) */}
       {/* ========================================================= */}
       {showUploadModal && (
         <div
-          onClick={() => setShowUploadModal(false)}
+          onClick={() => {
+            if (!loading) {
+              setShowUploadModal(false);
+              setSelectedPhotoFiles([]);
+            }
+          }}
           className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-lg w-full p-6 sm:p-8"
+            className="bg-[#12151a] border border-[#252b36] rounded-2xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl"
           >
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <span className="text-[10px] uppercase text-[#c99e64] font-semibold">Portfólio Público</span>
-                <h3 className="font-serif-luxury text-xl text-white">Adicionar Fotografias</h3>
+            <div className="flex justify-between items-center mb-5 pb-4 border-b border-[#1f2532]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#c99e64]/10 border border-[#c99e64]/30 flex items-center justify-center text-[#c99e64]">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase text-[#c99e64] font-bold tracking-widest">Portfólio Público</span>
+                  <h3 className="font-serif-luxury text-xl text-white">Adicionar Fotografias</h3>
+                </div>
               </div>
-              <button onClick={() => setShowUploadModal(false)} className="text-[#9ca3af] hover:text-white">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setShowUploadModal(false);
+                  setSelectedPhotoFiles([]);
+                }}
+                className="text-[#9ca3af] hover:text-white p-1 rounded-lg hover:bg-[#1a1f29] transition-colors disabled:opacity-40"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleUploadPhotos} className="space-y-4 text-xs">
+              {/* Categoria de Destino */}
               <div>
-                <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                  Categoria da(s) Foto(s) *
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-[#9ca3af] font-semibold uppercase tracking-wider text-[11px]">
+                    Categoria de Destino *
+                  </label>
+                  {uploadCategory && (
+                    <span className="text-[10px] text-[#c99e64] bg-[#c99e64]/10 px-2 py-0.5 rounded border border-[#c99e64]/20">
+                      Próxima numeração: #{getNextNumberForCategory(uploadCategory)}
+                    </span>
+                  )}
+                </div>
                 <select
                   required
                   value={uploadCategory}
                   onChange={(e) => setUploadCategory(e.target.value)}
-                  className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none"
+                  className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none transition-colors"
                 >
                   <option value="">Selecione uma categoria...</option>
                   {categories.map((c) => (
@@ -1886,31 +1956,141 @@ export const AdminPortfolioTab: React.FC = () => {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-[#9ca3af] font-semibold uppercase mb-1">
-                  Selecionar Fotografias *
-                </label>
-                <input
-                  type="file"
-                  ref={uploadFileInputRef}
-                  required
-                  multiple
-                  accept="image/jpeg,image/png,image/webp,image/avif"
-                  onChange={(e) => setUploadFiles(e.target.files)}
-                  className="w-full bg-[#0c0e11] border border-[#262b35] rounded-lg p-2.5 text-white focus:border-[#c99e64] focus:outline-none"
-                />
-                <div className="mt-2 p-3 bg-[#171b22] border border-[#242a35] rounded-lg">
-                  <div className="flex items-center justify-between text-[11px] text-[#c99e64] font-medium">
-                    <span>{uploadFiles && uploadFiles.length > 0 ? `📷 ${uploadFiles.length} foto(s) selecionada(s)` : 'Selecione uma ou mais fotos'}</span>
-                    <span className="text-[10px] text-[#8e95a2]">JPEG, PNG, WebP</span>
-                  </div>
-                  <p className="text-[10px] text-[#8e95a2] mt-1 leading-relaxed">
-                    ✨ O sistema atribui automaticamente os números visuais (#001, #002...) e organiza as fotos na ordem sequencial da categoria no Supabase.
-                  </p>
-                </div>
-              </div>
+              {/* Hidden file input for file selection */}
+              <input
+                type="file"
+                ref={uploadFileInputRef}
+                multiple
+                accept="image/jpeg,image/png,image/webp,image/avif"
+                onChange={(e) => {
+                  handleAddModalFiles(e.target.files);
+                  if (e.target) e.target.value = '';
+                }}
+                className="hidden"
+              />
 
-              <div className="flex items-center gap-2 pt-2">
+              {/* Dropzone & Preview Section */}
+              {selectedPhotoFiles.length === 0 ? (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setModalDragOver(true);
+                  }}
+                  onDragLeave={() => setModalDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setModalDragOver(false);
+                    if (e.dataTransfer.files) {
+                      handleAddModalFiles(e.dataTransfer.files);
+                    }
+                  }}
+                  onClick={() => uploadFileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+                    modalDragOver
+                      ? 'border-[#c99e64] bg-[#c99e64]/10 scale-[0.99]'
+                      : 'border-[#27303e] hover:border-[#c99e64]/50 bg-[#0d1015] hover:bg-[#11151c]'
+                  }`}
+                >
+                  <div className="w-12 h-12 rounded-full bg-[#181d26] border border-[#27303e] flex items-center justify-center mx-auto mb-3 text-[#c99e64]">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <div className="text-white font-medium text-sm mb-1">
+                    Arraste e solte as fotos aqui
+                  </div>
+                  <div className="text-[#8e95a2] text-[11px] mb-3">
+                    ou clique para navegar no seu computador / celular
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 text-[10px] text-[#c99e64] bg-[#1a1f29] px-2.5 py-1 rounded-full border border-[#2a3242]">
+                    <Sparkles className="w-3 h-3" />
+                    <span>Aceita múltiplas fotos JPG, PNG ou WebP em alta resolução</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* File Queue Header */}
+                  <div className="flex items-center justify-between p-2.5 bg-[#171b22] border border-[#242a35] rounded-xl">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-[#c99e64]/10 flex items-center justify-center text-[#c99e64]">
+                        <ImageIcon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-white">
+                          {selectedPhotoFiles.length} foto(s) na fila
+                        </span>
+                        <span className="text-[10px] text-[#8e95a2] ml-2">
+                          ({(selectedPhotoFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(1)} MB total)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => uploadFileInputRef.current?.click()}
+                        disabled={loading}
+                        className="px-2.5 py-1 bg-[#222834] hover:bg-[#2c3444] text-[#c99e64] hover:text-white rounded-lg transition-colors flex items-center gap-1 text-[11px] cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Mais Fotos</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPhotoFiles([])}
+                        disabled={loading}
+                        className="p-1 hover:bg-red-950/40 text-red-400 rounded-lg transition-colors cursor-pointer"
+                        title="Limpar seleção"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Thumbnail Gallery with Individual Remove Controls */}
+                  <div className="max-h-56 overflow-y-auto pr-1 grid grid-cols-2 sm:grid-cols-3 gap-2.5 custom-scrollbar">
+                    {selectedPhotoFiles.map((file, idx) => {
+                      const objectUrl = URL.createObjectURL(file);
+                      return (
+                        <div
+                          key={`${file.name}_${idx}`}
+                          className="group relative bg-[#0c0e11] border border-[#212733] rounded-lg overflow-hidden flex flex-col"
+                        >
+                          <div className="relative aspect-[4/3] bg-[#1a1f29] overflow-hidden">
+                            <img
+                              src={objectUrl}
+                              alt={file.name}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              onLoad={() => URL.revokeObjectURL(objectUrl)}
+                            />
+                            <div className="absolute top-1 left-1 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-mono text-[#c99e64] border border-[#c99e64]/20">
+                              #{idx + 1}
+                            </div>
+                            {!loading && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveModalFile(idx)}
+                                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/80 hover:bg-red-600 text-white flex items-center justify-center opacity-80 hover:opacity-100 transition-all cursor-pointer shadow-md"
+                                title="Remover esta foto"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                          <div className="p-1.5">
+                            <div className="text-[10px] text-white font-medium truncate" title={file.name}>
+                              {file.name}
+                            </div>
+                            <div className="text-[9px] text-[#8e95a2]">
+                              {(file.size / (1024 * 1024)).toFixed(1)} MB
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Status de Publicação */}
+              <div className="flex items-center gap-2 pt-1">
                 <input
                   type="checkbox"
                   id="upload-active-check"
@@ -1918,52 +2098,82 @@ export const AdminPortfolioTab: React.FC = () => {
                   onChange={(e) => setUploadActive(e.target.checked)}
                   className="rounded border-[#2d3340] text-[#c99e64] focus:ring-[#c99e64]"
                 />
-                <label htmlFor="upload-active-check" className="text-white text-xs cursor-pointer">
-                  Publicar imediatamente no portfólio (Foto Ativa)
+                <label htmlFor="upload-active-check" className="text-white text-xs cursor-pointer select-none">
+                  Publicar imediatamente no portfólio (Foto Ativa no site)
                 </label>
               </div>
 
+              {/* Informações de Numeração Automática */}
+              <div className="p-3 bg-[#151921] border border-[#232935] rounded-xl flex items-start gap-2.5 text-[11px] text-[#8e95a2] leading-relaxed">
+                <Info className="w-4 h-4 text-[#c99e64] shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white font-medium">Numeração Sequencial Automática:</strong> Cada fotografia é renomeada e ordenada dinamicamente no banco de dados e no Supabase Storage. Nenhuma foto anterior é substituída.
+                </div>
+              </div>
+
+              {/* Upload Progress Bar */}
               {loading && uploadProgress && (
-                <div className="p-3 bg-[#171b22] border border-[#c99e64]/30 rounded-lg space-y-2">
-                  <div className="flex items-center justify-between text-[11px] text-[#c99e64] font-medium">
-                    <span>Enviando fotos em lotes seguros...</span>
+                <div className="p-4 bg-[#171b22] border border-[#c99e64]/40 rounded-xl space-y-2.5 animate-pulse">
+                  <div className="flex items-center justify-between text-[11px] text-[#c99e64] font-semibold">
+                    <span className="truncate max-w-[280px]">
+                      {currentUploadingFileName ? `Enviando: ${currentUploadingFileName}` : 'Processando fotografias...'}
+                    </span>
                     <span>
                       {uploadProgress.current} de {uploadProgress.total} ({Math.round((uploadProgress.current / Math.max(1, uploadProgress.total)) * 100)}%)
                     </span>
                   </div>
-                  <div className="w-full bg-[#0c0e11] rounded-full h-2 overflow-hidden border border-[#2a303c]">
+                  <div className="w-full bg-[#0c0e11] rounded-full h-2.5 overflow-hidden border border-[#2a303c]">
                     <div
-                      className="bg-gradient-to-r from-[#c99e64] to-[#ecc793] h-full transition-all duration-300 rounded-full"
+                      className="bg-gradient-to-r from-[#c99e64] to-[#e4be88] h-full transition-all duration-300 rounded-full"
                       style={{
                         width: `${Math.round((uploadProgress.current / Math.max(1, uploadProgress.total)) * 100)}%`,
                       }}
                     />
                   </div>
-                  <p className="text-[10px] text-[#8e95a2]">
-                    Processando com armazenamento persistente. Por favor, aguarde a conclusão.
+                  <p className="text-[10px] text-[#8e95a2] flex items-center justify-between">
+                    <span>Processando com armazenamento resiliente.</span>
+                    <span className="text-[#c99e64]">Não feche esta janela</span>
                   </p>
                 </div>
               )}
 
+              {/* Action Buttons */}
               <div className="flex justify-end gap-2 pt-4 border-t border-[#1e232b]">
                 <button
                   type="button"
-                  onClick={() => setShowUploadModal(false)}
+                  onClick={() => {
+                    setShowUploadModal(false);
+                    setSelectedPhotoFiles([]);
+                  }}
                   disabled={loading}
-                  className="px-4 py-2.5 bg-[#171b22] text-white rounded-lg hover:bg-[#20252f] disabled:opacity-50"
+                  className="px-4 py-2.5 bg-[#171b22] text-white rounded-lg hover:bg-[#20252f] transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="px-5 py-2.5 bg-[#c99e64] text-black font-bold uppercase tracking-wider rounded-lg hover:bg-[#d8ae74] shadow-md shadow-[#c99e64]/20 disabled:opacity-60"
+                  disabled={loading || (selectedPhotoFiles.length === 0 && (!uploadFiles || uploadFiles.length === 0))}
+                  className="px-6 py-2.5 bg-[#c99e64] text-black font-bold uppercase tracking-wider rounded-lg hover:bg-[#d8ae74] shadow-lg shadow-[#c99e64]/20 transition-all disabled:opacity-50 cursor-pointer flex items-center gap-2"
                 >
-                  {loading
-                    ? uploadProgress
-                      ? `Enviando (${uploadProgress.current}/${uploadProgress.total})...`
-                      : 'Enviando...'
-                    : 'Subir Fotografias'}
+                  {loading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-black" />
+                      <span>
+                        {uploadProgress
+                          ? `Enviando (${uploadProgress.current}/${uploadProgress.total})...`
+                          : 'Enviando...'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      <span>
+                        {selectedPhotoFiles.length > 0
+                          ? `Subir ${selectedPhotoFiles.length} Foto(s)`
+                          : 'Subir Fotografias'}
+                      </span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
