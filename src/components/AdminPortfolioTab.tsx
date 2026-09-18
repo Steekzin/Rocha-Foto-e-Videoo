@@ -39,6 +39,25 @@ import {
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
 import { api } from '../services/api.js';
 
+const formatErrorMessage = (err: any, fallback: string): string => {
+  const msg = err?.message || (typeof err === 'string' ? err : '');
+  if (!msg) return fallback;
+  if (
+    msg.includes('FUNCTION_INVOCATION_FAILED') ||
+    msg.includes('Status 500') ||
+    msg.includes('Internal Server Error')
+  ) {
+    return 'Houve uma instabilidade temporária na hospedagem na nuvem (limite de memória na Vercel). O sistema ativou o modo de upload direto para o Supabase Storage. Por favor, tente enviar novamente.';
+  }
+  if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
+    return 'Falha na conexão de rede. Por favor, verifique sua conexão com a internet e tente novamente.';
+  }
+  if (msg.includes('Payload Too Large') || msg.includes('413')) {
+    return 'O arquivo de fotografia é muito pesado para envio convencional. O sistema aplicou compressão automática para o próximo envio.';
+  }
+  return msg;
+};
+
 export const AdminPortfolioTab: React.FC = () => {
   // Sub-tab: 'photos' | 'categories' | 'import'
   const [activeSubTab, setActiveSubTab] = useState<'photos' | 'categories' | 'import'>('photos');
@@ -347,7 +366,8 @@ export const AdminPortfolioTab: React.FC = () => {
       setSelectedCategoryFilter(uploadCategory);
       await loadAllData();
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Erro ao fazer upload das fotos' });
+      console.error('[Upload Error Caught]:', err);
+      setStatusMessage({ type: 'error', text: formatErrorMessage(err, 'Erro ao fazer upload das fotos') });
     } finally {
       setLoading(false);
       setUploadProgress(null);

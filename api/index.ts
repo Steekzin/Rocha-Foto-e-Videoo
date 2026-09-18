@@ -5,6 +5,14 @@ process.env.NODE_ENV = 'production';
 
 import app from '../server.ts';
 
+// Crucial for Vercel Serverless: Disable internal body parser so Multer/Express can stream multipart files
+export const config = {
+  api: {
+    bodyParser: false,
+    externalResolver: true,
+  },
+};
+
 export default function handler(req: any, res: any) {
   // Add CORS headers immediately
   if (res && res.setHeader) {
@@ -54,5 +62,3 @@ export default function handler(req: any, res: any) {
     }
   }
 }
-
-
