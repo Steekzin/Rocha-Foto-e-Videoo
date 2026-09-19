@@ -1121,6 +1121,7 @@ export const api = {
     }
 
     const isAdmin = params?.isAdmin !== false;
+    query.set('_t', String(Date.now()));
     const endpoint = isAdmin
       ? `${API_BASE}/admin/portfolio/photos?${query.toString()}`
       : `${API_BASE}/portfolio?${query.toString()}`;
@@ -1129,6 +1130,7 @@ export const api = {
     try {
       const res = await fetch(endpoint, {
         headers: isAdmin ? getAdminHeaders() : {},
+        cache: 'no-store',
       });
       serverPhotos = await parseJsonResponse<PortfolioPhoto[]>(res, 'Erro ao carregar fotografias do portfólio');
     } catch (err: any) {
@@ -1243,10 +1245,19 @@ export const api = {
       return INITIAL_PORTFOLIO_PHOTOS;
     }
 
-    if (targetCat && targetCat !== 'Todos') {
-      return normalizedServer.filter((p) => matchesCategory(p, targetCat));
-    }
-    return normalizedServer;
+    const finalFetched = (targetCat && targetCat !== 'Todos')
+      ? normalizedServer.filter((p) => matchesCategory(p, targetCat))
+      : normalizedServer;
+
+    console.info('[FETCH RESULT]', {
+      total: finalFetched.length,
+      targetCat: targetCat || 'Todos',
+      latestIds: finalFetched.slice(0, 3).map((p) => p.id),
+      categoryIds: Array.from(new Set(finalFetched.map((p) => p.categoryId))),
+      numbers: finalFetched.slice(0, 5).map((p) => p.number),
+    });
+
+    return finalFetched;
   },
 
   async syncClientPhotosToServer(): Promise<{ success: boolean; count: number; saved: PortfolioPhoto[] }> {
@@ -1627,8 +1638,28 @@ export const api = {
       }
     }
 
-    // If at least one photo was uploaded successfully, return success
+    // If at least one photo was uploaded successfully, verify presence in Supabase and return success
     if (allUploaded.length > 0) {
+      if (supabase) {
+        try {
+          const uploadedIds = allUploaded.map((p) => p.id);
+          const { data: verifiedRows } = await supabase
+            .from('portfolio_photos')
+            .select('id, category_id, number')
+            .in('id', uploadedIds);
+
+          console.info('[PHOTO INSERT - SUPABASE CONFIRMED]', {
+            totalUploaded: allUploaded.length,
+            totalConfirmedInSupabase: verifiedRows?.length || 0,
+            confirmedIds: (verifiedRows || []).map((r: any) => r.id),
+            categoryId,
+            numbers: (verifiedRows || []).map((r: any) => r.number),
+          });
+        } catch (verifyErr: any) {
+          console.warn('[PHOTO INSERT Verification Warning]:', verifyErr?.message);
+        }
+      }
+
       return {
         success: true,
         count: allUploaded.length,

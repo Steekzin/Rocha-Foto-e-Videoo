@@ -19,6 +19,7 @@ import {
   Edit2,
   ArrowUp,
   ArrowDown,
+  ArrowUpDown,
   Eye,
   EyeOff,
   X,
@@ -58,9 +59,21 @@ const formatErrorMessage = (err: any, fallback: string): string => {
   return msg;
 };
 
+const normalizeCategorySlug = (text: string) =>
+  String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
 export const AdminPortfolioTab: React.FC = () => {
   // Sub-tab: 'photos' | 'categories' | 'import'
   const [activeSubTab, setActiveSubTab] = useState<'photos' | 'categories' | 'import'>('photos');
+
+  // Anti-Race Condition Reference to discard stale fetch responses
+  const activeFetchIdRef = useRef<number>(0);
 
   // Data states
   const [categories, setCategories] = useState<PortfolioCategory[]>([]);
@@ -70,9 +83,10 @@ export const AdminPortfolioTab: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
-  // Filters for Photos tab
+  // Filters and Sorting for Photos tab
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('Todos');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'order'>('newest');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Category CRUD Modals
@@ -154,8 +168,15 @@ export const AdminPortfolioTab: React.FC = () => {
   const [pageSize, setPageSize] = useState<number>(48);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
-  // Load all categories and photos with fault-tolerant fallbacks
-  const loadAllData = async () => {
+  // Load all categories and photos with anti-race condition guard and fault-tolerant fallbacks
+  const loadAllData = async (options?: { forceKeepPhotos?: PortfolioPhoto[] }) => {
+    const thisFetchId = ++activeFetchIdRef.current;
+    console.info('[FETCH PHOTOS]', {
+      requestId: thisFetchId,
+      timestamp: Date.now(),
+      selectedCategoryFilter,
+    });
+
     try {
       setLoading(true);
 
@@ -164,10 +185,6 @@ export const AdminPortfolioTab: React.FC = () => {
         const syncRes = await api.syncClientPhotosToServer();
         if (syncRes && syncRes.count > 0) {
           console.info(`[Sync] ${syncRes.count} fotos locais foram migradas para o banco permanente.`);
-          setStatusMessage({
-            type: 'success',
-            text: `✨ ${syncRes.count} fotografia(s) que estavam salvas localmente foram sincronizadas com o servidor!`,
-          });
         }
       } catch (syncErr) {
         console.warn('Sync client photos skipped:', syncErr);
@@ -179,11 +196,36 @@ export const AdminPortfolioTab: React.FC = () => {
         api.getPortfolio(),
       ]);
 
+      // Anti-Race Condition Check: If a newer request was initiated while this one was in flight, DISCARD this response
+      if (thisFetchId !== activeFetchIdRef.current) {
+        console.warn('[RACE CONDITION PREVENTED] Descartada resposta de requisição desatualizada.', {
+          thisFetchId,
+          activeFetchId: activeFetchIdRef.current,
+        });
+        return;
+      }
+
       const cats = results[0].status === 'fulfilled' ? results[0].value : [];
-      const photosList = results[1].status === 'fulfilled' ? results[1].value : [];
+      let photosList = results[1].status === 'fulfilled' ? results[1].value : [];
       const legacy = results[2].status === 'fulfilled' ? results[2].value : [];
 
-      console.info(`[loadAllData] Carregadas ${photosList.length} fotos e ${cats.length} categorias.`);
+      // If specific freshly uploaded photos were provided, ensure they are preserved during replica propagation
+      if (options?.forceKeepPhotos && options.forceKeepPhotos.length > 0) {
+        const idSet = new Set(photosList.map((p) => String(p.id)));
+        const missing = options.forceKeepPhotos.filter((p) => !idSet.has(String(p.id)));
+        if (missing.length > 0) {
+          console.info('[PHOTO MERGE SAFEGUARD] Preservando fotos recém-adicionadas em propagação:', missing.map((p) => p.id));
+          photosList = [...missing, ...photosList];
+        }
+      }
+
+      console.info('[SET PHOTOS]', {
+        requestId: thisFetchId,
+        totalPhotos: photosList.length,
+        latestPhotos: photosList.slice(0, 3).map((p) => ({ id: p.id, categoryId: p.categoryId, number: p.number })),
+        categoriesCount: cats.length,
+      });
+
       setCategories([...cats]);
       setPhotos([...photosList]);
       setLegacyItems([...legacy]);
@@ -199,9 +241,13 @@ export const AdminPortfolioTab: React.FC = () => {
         setStatusMessage({ type: 'error', text: 'Erro ao carregar dados do portfólio: ' + (errReason?.message || errReason) });
       }
     } catch (err: any) {
-      console.error('Error loading portfolio admin data:', err);
+      if (thisFetchId === activeFetchIdRef.current) {
+        console.error('Error loading portfolio admin data:', err);
+      }
     } finally {
-      setLoading(false);
+      if (thisFetchId === activeFetchIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -350,6 +396,13 @@ export const AdminPortfolioTab: React.FC = () => {
       );
       const categoryIdToSend = catObj ? catObj.id : undefined;
 
+      console.info('[PHOTO UPLOAD]', {
+        totalFiles: filesArray.length,
+        category: uploadCategory,
+        categoryId: categoryIdToSend,
+        fileNames: filesArray.map((f) => f.name),
+      });
+
       const res = await api.uploadPortfolioPhotos(
         filesArray,
         uploadCategory,
@@ -382,18 +435,12 @@ export const AdminPortfolioTab: React.FC = () => {
         }
       );
 
-      // Immediately merge uploaded photos into state so they are visible with zero lag
-      if (res && res.photos && res.photos.length > 0) {
-        setPhotos((prev) => {
-          const existingIds = new Set(prev.map((p) => String(p.id)));
-          const fresh = res.photos.filter((p) => !existingIds.has(String(p.id)));
-          return [...fresh, ...prev];
-        });
-      }
-
-      setStatusMessage({
-        type: 'success',
-        text: `✨ Sucesso! ${res.count} fotografia(s) adicionada(s) à categoria "${uploadCategory}" com numeração sequencial automática.`,
+      console.info('[PHOTO INSERT]', {
+        success: res.success,
+        count: res.count,
+        photoIds: (res.photos || []).map((p) => p.id),
+        categoryId: categoryIdToSend,
+        numbers: (res.photos || []).map((p) => p.number),
       });
 
       setShowUploadModal(false);
@@ -401,9 +448,18 @@ export const AdminPortfolioTab: React.FC = () => {
       setUploadFiles(null);
       setCurrentUploadingFileName('');
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
+
+      // Atualizar filtro para a categoria de upload e ir para a página 1
       setSelectedCategoryFilter(uploadCategory);
       setCurrentPage(1);
-      await loadAllData();
+
+      // Consultar banco atualizado com proteção de concorrência e preservação garantida
+      await loadAllData({ forceKeepPhotos: res.photos || [] });
+
+      setStatusMessage({
+        type: 'success',
+        text: `✨ Sucesso! ${res.count} fotografia(s) adicionada(s) à categoria "${uploadCategory}" com numeração sequencial automática.`,
+      });
     } catch (err: any) {
       console.error('[Upload Error Caught]:', err);
       setStatusMessage({ type: 'error', text: formatErrorMessage(err, 'Erro ao fazer upload das fotos') });
@@ -963,7 +1019,7 @@ export const AdminPortfolioTab: React.FC = () => {
   }, [photos, categories]);
 
   const filteredPhotos = React.useMemo(() => {
-    return photos.filter((p) => {
+    const result = photos.filter((p) => {
       const photoCat = (p.categoryName || (p as any).category || '').trim().toLowerCase();
       // Category filter
       if (selectedCategoryFilter !== 'Todos') {
@@ -973,7 +1029,10 @@ export const AdminPortfolioTab: React.FC = () => {
         );
         const matchesName = photoCat === filterLower;
         const matchesId = matchedCategoryObj ? p.categoryId === matchedCategoryObj.id : false;
-        if (!matchesName && !matchesId) {
+        const matchesSlug = matchedCategoryObj
+          ? normalizeCategorySlug(photoCat) === normalizeCategorySlug(matchedCategoryObj.name)
+          : false;
+        if (!matchesName && !matchesId && !matchesSlug) {
           return false;
         }
       }
@@ -991,12 +1050,40 @@ export const AdminPortfolioTab: React.FC = () => {
         (p.caption && p.caption.toLowerCase().includes(q))
       );
     });
-  }, [photos, categories, selectedCategoryFilter, selectedStatusFilter, searchQuery]);
 
-  // Reset page to 1 when filters change
+    // Ordenação consistente
+    const sorted = [...result].sort((a, b) => {
+      if (sortOrder === 'newest') {
+        const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (dateA !== dateB) return dateB - dateA;
+        const numA = parseInt(a.number || '0', 10);
+        const numB = parseInt(b.number || '0', 10);
+        if (numA !== numB) return numB - numA;
+        return String(b.id).localeCompare(String(a.id));
+      } else {
+        const numA = parseInt(a.number || '0', 10) || a.order || 0;
+        const numB = parseInt(b.number || '0', 10) || b.order || 0;
+        return numA - numB;
+      }
+    });
+
+    console.info('[FILTER RESULT]', {
+      selectedCategoryFilter,
+      selectedStatusFilter,
+      sortOrder,
+      totalPhotosBeforeFilter: photos.length,
+      totalPhotosAfterFilter: sorted.length,
+      sampleFirst: sorted.slice(0, 3).map((p) => ({ id: p.id, number: p.number, title: p.title })),
+    });
+
+    return sorted;
+  }, [photos, categories, selectedCategoryFilter, selectedStatusFilter, searchQuery, sortOrder]);
+
+  // Reset page to 1 when filters or sorting change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedCategoryFilter, selectedStatusFilter, searchQuery, pageSize]);
+  }, [selectedCategoryFilter, selectedStatusFilter, searchQuery, pageSize, sortOrder]);
 
   const totalFilteredCount = filteredPhotos.length;
   const isAllPages = pageSize === -1;
@@ -1004,11 +1091,19 @@ export const AdminPortfolioTab: React.FC = () => {
   const effectiveCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
 
   const displayedPhotos = React.useMemo(() => {
-    if (isAllPages || totalFilteredCount <= pageSize) {
-      return filteredPhotos;
+    let list = filteredPhotos;
+    if (!isAllPages && totalFilteredCount > pageSize) {
+      const start = (effectiveCurrentPage - 1) * pageSize;
+      list = filteredPhotos.slice(start, start + pageSize);
     }
-    const start = (effectiveCurrentPage - 1) * pageSize;
-    return filteredPhotos.slice(start, start + pageSize);
+    console.info('[FINAL PHOTOS]', {
+      currentPage: effectiveCurrentPage,
+      pageSize,
+      totalFiltered: totalFilteredCount,
+      displayedCount: list.length,
+      displayedIds: list.slice(0, 5).map((p) => p.id),
+    });
+    return list;
   }, [filteredPhotos, effectiveCurrentPage, pageSize, isAllPages, totalFilteredCount]);
 
   const isRealPhotos = photos.some((p) => p.imageUrl.startsWith('/portfolio/'));
@@ -1326,6 +1421,20 @@ export const AdminPortfolioTab: React.FC = () => {
                 >
                   Inativas ({photos.length - activePhotosCount})
                 </button>
+              </div>
+
+              {/* Sort selector */}
+              <div className="flex items-center gap-1.5 bg-[#0c0e11] px-2.5 py-1.5 rounded-lg border border-[#262b35]">
+                <ArrowUpDown className="w-3.5 h-3.5 text-[#c99e64]" />
+                <select
+                  value={sortOrder}
+                  onChange={(e) => setSortOrder(e.target.value as any)}
+                  className="bg-transparent border-0 text-xs text-white focus:outline-none cursor-pointer"
+                  title="Ordem de exibição das fotografias"
+                >
+                  <option value="newest" className="bg-[#12151a]">Mais Recentes Primeiro</option>
+                  <option value="order" className="bg-[#12151a]">Numeração Sequencial (#001 → #999)</option>
+                </select>
               </div>
             </div>
 
