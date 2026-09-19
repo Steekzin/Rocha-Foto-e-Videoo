@@ -150,6 +150,10 @@ export const AdminPortfolioTab: React.FC = () => {
 
   const [dataVersion, setDataVersion] = useState(0);
 
+  // Pagination states for high-capacity photo management (supports 50, 100, 500, 1000+ photos)
+  const [pageSize, setPageSize] = useState<number>(48);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
   // Load all categories and photos with fault-tolerant fallbacks
   const loadAllData = async () => {
     try {
@@ -341,21 +345,51 @@ export const AdminPortfolioTab: React.FC = () => {
       }
       setStatusMessage({ type: 'info', text: `Iniciando envio de ${filesArray.length} foto(s) para "${uploadCategory}"...` });
 
+      const catObj = categories.find(
+        (c) => c.name.toLowerCase() === uploadCategory.toLowerCase() || c.id === uploadCategory
+      );
+      const categoryIdToSend = catObj ? catObj.id : undefined;
+
       const res = await api.uploadPortfolioPhotos(
         filesArray,
         uploadCategory,
-        { active: uploadActive },
-        (current, total) => {
-          setUploadProgress({ current, total });
-          if (filesArray[current - 1]) {
-            setCurrentUploadingFileName(filesArray[current - 1].name);
-          }
-          setStatusMessage({
-            type: 'info',
-            text: `Enviando fotos: ${current} de ${total} (${Math.round((current / total) * 100)}%)...`,
-          });
+        {
+          active: uploadActive,
+          categoryId: categoryIdToSend,
+          onProgress: (progress: any) => {
+            if (typeof progress === 'object' && progress !== null) {
+              setUploadProgress({ current: progress.current, total: progress.total });
+              if (progress.fileName) {
+                setCurrentUploadingFileName(progress.fileName);
+              }
+              setStatusMessage({
+                type: 'info',
+                text: `Enviando fotos: ${progress.current} de ${progress.total} (${progress.percent}%)...`,
+              });
+            } else if (typeof progress === 'number') {
+              const current = progress;
+              const total = filesArray.length;
+              setUploadProgress({ current, total });
+              if (filesArray[current - 1]) {
+                setCurrentUploadingFileName(filesArray[current - 1].name);
+              }
+              setStatusMessage({
+                type: 'info',
+                text: `Enviando fotos: ${current} de ${total} (${Math.round((current / total) * 100)}%)...`,
+              });
+            }
+          },
         }
       );
+
+      // Immediately merge uploaded photos into state so they are visible with zero lag
+      if (res && res.photos && res.photos.length > 0) {
+        setPhotos((prev) => {
+          const existingIds = new Set(prev.map((p) => String(p.id)));
+          const fresh = res.photos.filter((p) => !existingIds.has(String(p.id)));
+          return [...fresh, ...prev];
+        });
+      }
 
       setStatusMessage({
         type: 'success',
@@ -368,6 +402,7 @@ export const AdminPortfolioTab: React.FC = () => {
       setCurrentUploadingFileName('');
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
       setSelectedCategoryFilter(uploadCategory);
+      setCurrentPage(1);
       await loadAllData();
     } catch (err: any) {
       console.error('[Upload Error Caught]:', err);
@@ -958,6 +993,24 @@ export const AdminPortfolioTab: React.FC = () => {
     });
   }, [photos, categories, selectedCategoryFilter, selectedStatusFilter, searchQuery]);
 
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedCategoryFilter, selectedStatusFilter, searchQuery, pageSize]);
+
+  const totalFilteredCount = filteredPhotos.length;
+  const isAllPages = pageSize === -1;
+  const totalPages = isAllPages ? 1 : Math.max(1, Math.ceil(totalFilteredCount / (pageSize || 48)));
+  const effectiveCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedPhotos = React.useMemo(() => {
+    if (isAllPages || totalFilteredCount <= pageSize) {
+      return filteredPhotos;
+    }
+    const start = (effectiveCurrentPage - 1) * pageSize;
+    return filteredPhotos.slice(start, start + pageSize);
+  }, [filteredPhotos, effectiveCurrentPage, pageSize, isAllPages, totalFilteredCount]);
+
   const isRealPhotos = photos.some((p) => p.imageUrl.startsWith('/portfolio/'));
   const activePhotosCount = photos.filter((p) => p.active).length;
   const activeCategoriesCount = categories.filter((c) => c.active).length;
@@ -1397,6 +1450,66 @@ export const AdminPortfolioTab: React.FC = () => {
             </div>
           )}
 
+          {/* Photos Visual Grid Header & Pagination Bar */}
+          {filteredPhotos.length > 0 && (
+            <div className="bg-[#12151a] rounded-xl border border-[#20252e] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="text-[#9ca3af]">
+                Exibindo{' '}
+                <strong className="text-white font-semibold">
+                  {(effectiveCurrentPage - 1) * (pageSize === -1 ? totalFilteredCount : pageSize) + 1}–
+                  {isAllPages ? totalFilteredCount : Math.min(effectiveCurrentPage * pageSize, totalFilteredCount)}
+                </strong>{' '}
+                de <strong className="text-[#c99e64]">{totalFilteredCount}</strong> fotos filtradas{' '}
+                <span className="text-gray-500 font-normal">
+                  (Total cadastrado: {photos.length} fotos)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 ml-auto">
+                <div className="flex items-center gap-1.5 text-xs text-[#9ca3af]">
+                  <span>Itens por página:</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-[#0c0e11] border border-[#262b35] rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-[#c99e64]"
+                  >
+                    <option value={24}>24</option>
+                    <option value={48}>48</option>
+                    <option value={96}>96</option>
+                    <option value={-1}>Todas ({totalFilteredCount})</option>
+                  </select>
+                </div>
+
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={effectiveCurrentPage <= 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      className="px-2.5 py-1 rounded border border-[#2b313d] bg-[#171b22] hover:bg-[#232934] disabled:opacity-40 disabled:pointer-events-none text-white text-xs transition-colors cursor-pointer"
+                    >
+                      ← Anterior
+                    </button>
+                    <span className="px-2 py-1 text-xs text-gray-300 font-medium">
+                      {effectiveCurrentPage} / {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={effectiveCurrentPage >= totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      className="px-2.5 py-1 rounded border border-[#2b313d] bg-[#171b22] hover:bg-[#232934] disabled:opacity-40 disabled:pointer-events-none text-white text-xs transition-colors cursor-pointer"
+                    >
+                      Próxima →
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Photos Visual Grid */}
           {filteredPhotos.length === 0 ? (
             <div className="py-16 text-center bg-[#12151a] rounded-xl border border-[#20252e] p-8">
@@ -1434,7 +1547,7 @@ export const AdminPortfolioTab: React.FC = () => {
               key={`grid_${selectedCategoryFilter}_${dataVersion}_${photos.length}`}
               className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
             >
-              {filteredPhotos.map((photo, index) => (
+              {displayedPhotos.map((photo, index) => (
                 <div
                   key={`${photo.id}_${dataVersion}_${photo.number || index}`}
                   className={`group relative bg-[#0e1014] rounded-xl overflow-hidden border transition-all flex flex-col ${
@@ -1635,6 +1748,66 @@ export const AdminPortfolioTab: React.FC = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Bottom Pagination Bar */}
+          {totalPages > 1 && (
+            <div className="bg-[#12151a] rounded-xl border border-[#20252e] p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <span className="text-[#9ca3af]">
+                Página <strong className="text-white font-semibold">{effectiveCurrentPage}</strong> de{' '}
+                <strong className="text-[#c99e64]">{totalPages}</strong> ({totalFilteredCount} fotos filtradas)
+              </span>
+
+              <div className="flex items-center gap-1.5 ml-auto">
+                <button
+                  type="button"
+                  disabled={effectiveCurrentPage <= 1}
+                  onClick={() => {
+                    setCurrentPage((p) => Math.max(1, p - 1));
+                    window.scrollTo({ top: 400, behavior: 'smooth' });
+                  }}
+                  className="px-3 py-1.5 rounded-lg border border-[#2b313d] bg-[#171b22] hover:bg-[#232934] disabled:opacity-40 disabled:pointer-events-none text-white text-xs transition-colors cursor-pointer"
+                >
+                  ← Página Anterior
+                </button>
+
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - effectiveCurrentPage) <= 2)
+                  .map((pageNum, idx, arr) => (
+                    <React.Fragment key={pageNum}>
+                      {idx > 0 && arr[idx - 1] !== pageNum - 1 && (
+                        <span className="px-1 text-gray-600">...</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCurrentPage(pageNum);
+                          window.scrollTo({ top: 400, behavior: 'smooth' });
+                        }}
+                        className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                          effectiveCurrentPage === pageNum
+                            ? 'bg-[#c99e64] text-black shadow-sm'
+                            : 'bg-[#171b22] text-gray-300 hover:bg-[#232934] border border-[#2b313d]'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    </React.Fragment>
+                  ))}
+
+                <button
+                  type="button"
+                  disabled={effectiveCurrentPage >= totalPages}
+                  onClick={() => {
+                    setCurrentPage((p) => Math.min(totalPages, p + 1));
+                    window.scrollTo({ top: 400, behavior: 'smooth' });
+                  }}
+                  className="px-3 py-1.5 rounded-lg border border-[#2b313d] bg-[#171b22] hover:bg-[#232934] disabled:opacity-40 disabled:pointer-events-none text-white text-xs transition-colors cursor-pointer"
+                >
+                  Próxima Página →
+                </button>
+              </div>
             </div>
           )}
         </div>

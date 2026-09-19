@@ -638,19 +638,40 @@ export async function fetchPortfolioPhotosFromSupabase(params?: {
   const client = getSupabase();
   if (!client) return [];
   try {
-    let query = client.from('portfolio_photos').select('*').order('order_num', { ascending: true });
-    if (params?.categoryId && params.categoryId !== 'Todos') {
-      query = query.eq('category_id', params.categoryId);
+    const allRows: any[] = [];
+    const PAGE_SIZE = 1000;
+    let page = 0;
+
+    while (true) {
+      let query = client
+        .from('portfolio_photos')
+        .select('*')
+        .order('order_num', { ascending: true })
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+
+      if (params?.categoryId && params.categoryId !== 'Todos') {
+        query = query.eq('category_id', params.categoryId);
+      }
+      if (params?.activeOnly) {
+        query = query.eq('active', true);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.warn('[Supabase] Erro ao consultar portfolio_photos:', error.message);
+        break;
+      }
+      if (!data || data.length === 0) {
+        break;
+      }
+      allRows.push(...data);
+      if (data.length < PAGE_SIZE) {
+        break;
+      }
+      page++;
     }
-    if (params?.activeOnly) {
-      query = query.eq('active', true);
-    }
-    const { data, error } = await query;
-    if (error) {
-      console.warn('[Supabase] Erro ao consultar portfolio_photos:', error.message);
-      return [];
-    }
-    return (data || []).map((row: any) => ({
+
+    return allRows.map((row: any) => ({
       id: row.id,
       categoryId: row.category_id,
       categoryName: row.category_name,
@@ -676,9 +697,31 @@ export async function savePortfolioPhotoToSupabase(p: PortfolioPhoto): Promise<v
   if (!client) return;
 
   try {
+    // Verify or resolve valid category_id
+    let validCatId = p.categoryId;
+    const { data: catRows } = await client.from('portfolio_categories').select('id, name');
+    const existing = (catRows || []).find(
+      (c: any) => c.id === validCatId || c.name.toLowerCase() === (p.categoryName || '').toLowerCase()
+    );
+    if (existing) {
+      validCatId = existing.id;
+    } else {
+      const slug = (p.categoryName || 'geral').toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+      validCatId = `cat-${slug}`;
+      await client.from('portfolio_categories').upsert({
+        id: validCatId,
+        name: p.categoryName || 'Geral',
+        slug,
+        order_num: 99,
+        active: true,
+        description: `${p.categoryName} — Categoria do Portfólio`,
+        created_at: new Date().toISOString(),
+      });
+    }
+
     const { error } = await client.from('portfolio_photos').upsert({
       id: p.id,
-      category_id: p.categoryId,
+      category_id: validCatId,
       category_name: p.categoryName,
       number: p.number,
       order_num: p.order || 1,
@@ -703,21 +746,56 @@ export async function syncPortfolioPhotosToSupabase(photosList: PortfolioPhoto[]
   if (!client || photosList.length === 0) return;
 
   try {
-    const rows = photosList.map((p) => ({
-      id: p.id,
-      category_id: p.categoryId,
-      category_name: p.categoryName,
-      number: p.number,
-      order_num: p.order || 1,
-      image_url: p.imageUrl,
-      thumbnail_url: p.thumbnailUrl || p.imageUrl,
-      title: p.title || `${p.categoryName} #${p.number}`,
-      description: p.description || '',
-      aspect: p.aspect || 'portrait',
-      active: p.active !== false,
-      featured: Boolean(p.featured),
-      created_at: p.createdAt || new Date().toISOString(),
-    }));
+    // 1. Fetch existing categories to ensure foreign key constraint
+    const { data: existingCats } = await client.from('portfolio_categories').select('id, name');
+    const catMapById = new Map<string, string>();
+    const catMapByName = new Map<string, string>();
+    (existingCats || []).forEach((c: any) => {
+      catMapById.set(c.id, c.name);
+      catMapByName.set(c.name.toLowerCase(), c.id);
+    });
+
+    const rows: any[] = [];
+    for (const p of photosList) {
+      let validCatId = p.categoryId;
+      const catName = p.categoryName || 'Geral';
+
+      if (!catMapById.has(validCatId)) {
+        if (catMapByName.has(catName.toLowerCase())) {
+          validCatId = catMapByName.get(catName.toLowerCase())!;
+        } else {
+          const slug = catName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+          validCatId = `cat-${slug}`;
+          await client.from('portfolio_categories').upsert({
+            id: validCatId,
+            name: catName,
+            slug,
+            order_num: 99,
+            active: true,
+            description: `${catName} — Categoria do Portfólio`,
+            created_at: new Date().toISOString(),
+          });
+          catMapById.set(validCatId, catName);
+          catMapByName.set(catName.toLowerCase(), validCatId);
+        }
+      }
+
+      rows.push({
+        id: p.id,
+        category_id: validCatId,
+        category_name: p.categoryName || catMapById.get(validCatId) || 'Geral',
+        number: p.number,
+        order_num: p.order || 1,
+        image_url: p.imageUrl,
+        thumbnail_url: p.thumbnailUrl || p.imageUrl,
+        title: p.title || `${p.categoryName} #${p.number}`,
+        description: p.description || '',
+        aspect: p.aspect || 'portrait',
+        active: p.active !== false,
+        featured: Boolean(p.featured),
+        created_at: p.createdAt || new Date().toISOString(),
+      });
+    }
 
     // Upsert in batches of 50 to prevent packet size limits
     const BATCH = 50;

@@ -1135,21 +1135,39 @@ export const api = {
       console.warn('Aviso ao buscar fotos do servidor (usando fallback no Supabase/local):', err.message);
     }
 
-    // Direct Supabase Sync & Fallback: Merge Supabase photos so newly uploaded cloud photos always appear immediately
+    // Direct Supabase Sync & Fallback: Fetch all photos from Supabase (paginated chunks so no 1000 limit)
     if (supabase) {
       try {
-        let sbQuery = supabase.from('portfolio_photos').select('*').order('order_num', { ascending: true });
-        if (params?.activeOnly) {
-          sbQuery = sbQuery.eq('active', true);
-        } else if (params?.status === 'active') {
-          sbQuery = sbQuery.eq('active', true);
-        } else if (params?.status === 'inactive') {
-          sbQuery = sbQuery.eq('active', false);
+        const allSbRows: any[] = [];
+        const PAGE_SIZE = 1000;
+        let page = 0;
+
+        while (true) {
+          let sbQuery = supabase
+            .from('portfolio_photos')
+            .select('*')
+            .order('order_num', { ascending: true })
+            .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+
+          if (params?.activeOnly || params?.status === 'active') {
+            sbQuery = sbQuery.eq('active', true);
+          } else if (params?.status === 'inactive') {
+            sbQuery = sbQuery.eq('active', false);
+          }
+
+          const { data: sbPhotos, error } = await sbQuery;
+          if (error) {
+            console.warn('Erro ao consultar Supabase portfolio_photos:', error.message);
+            break;
+          }
+          if (!sbPhotos || sbPhotos.length === 0) break;
+          allSbRows.push(...sbPhotos);
+          if (sbPhotos.length < PAGE_SIZE) break;
+          page++;
         }
 
-        const { data: sbPhotos, error } = await sbQuery;
-        if (!error && sbPhotos && sbPhotos.length > 0) {
-          const directPhotos: PortfolioPhoto[] = sbPhotos.map((row: any) => ({
+        if (allSbRows.length > 0) {
+          const directPhotos: PortfolioPhoto[] = allSbRows.map((row: any) => ({
             id: row.id,
             categoryId: row.category_id,
             categoryName: row.category_name,
@@ -1194,35 +1212,40 @@ export const api = {
 
     const normalizedServer = (serverPhotos || []).map(normalizePhoto);
     const clientPhotos = getClientPortfolioPhotos().map(normalizePhoto);
+    const targetCat = params?.categoryId || params?.category;
+
+    const matchesCategory = (p: PortfolioPhoto, target: string) => {
+      if (!target || target === 'Todos') return true;
+      const tLower = target.toLowerCase();
+      return (
+        p.categoryId === target ||
+        (p.categoryName && p.categoryName.toLowerCase() === tLower) ||
+        toSlug(p.categoryName || '') === toSlug(target) ||
+        ((p as any).category && String((p as any).category).toLowerCase() === tLower)
+      );
+    };
 
     if (clientPhotos.length > 0) {
       const serverIdSet = new Set(normalizedServer.map((p) => String(p.id)));
       const uniqueClientPhotos = clientPhotos.filter((p) => !serverIdSet.has(String(p.id)));
       const combined = [...uniqueClientPhotos, ...normalizedServer];
 
-      if (params?.category && params.category !== 'Todos') {
-        const catFilter = params.category.toLowerCase();
-        return combined.filter(
-          (p) =>
-            p.categoryName.toLowerCase() === catFilter ||
-            (p as any).category?.toLowerCase() === catFilter
-        );
+      if (targetCat && targetCat !== 'Todos') {
+        return combined.filter((p) => matchesCategory(p, targetCat));
       }
       return combined;
     }
 
     if (normalizedServer.length === 0) {
-      if (params?.category && params.category !== 'Todos') {
-        const catFilter = params.category.toLowerCase();
-        return INITIAL_PORTFOLIO_PHOTOS.filter(
-          (p) =>
-            p.categoryName.toLowerCase() === catFilter ||
-            (p as any).category?.toLowerCase() === catFilter
-        );
+      if (targetCat && targetCat !== 'Todos') {
+        return INITIAL_PORTFOLIO_PHOTOS.filter((p) => matchesCategory(p, targetCat));
       }
       return INITIAL_PORTFOLIO_PHOTOS;
     }
 
+    if (targetCat && targetCat !== 'Todos') {
+      return normalizedServer.filter((p) => matchesCategory(p, targetCat));
+    }
     return normalizedServer;
   },
 
@@ -1252,8 +1275,8 @@ export const api = {
 
   async uploadPortfolioPhotos(
     filesOrFormData: File[] | FormData,
-    categoryName?: string,
-    extra?: { title?: string; caption?: string; active?: boolean },
+    targetCategoryName?: string,
+    extra?: { title?: string; caption?: string; active?: boolean; categoryId?: string; onProgress?: any },
     onProgress?: (current: number, total: number) => void
   ): Promise<{
     success: boolean;
@@ -1262,7 +1285,7 @@ export const api = {
     category: string;
   }> {
     let files: File[] = [];
-    let cat = categoryName || 'Geral';
+    let cat = targetCategoryName || 'Geral';
     let title = extra?.title;
     let caption = extra?.caption;
     let active = extra?.active !== undefined ? extra.active : true;
@@ -1304,32 +1327,67 @@ export const api = {
     const allUploaded: PortfolioPhoto[] = [];
     const failedFiles: { name: string; error: string }[] = [];
 
-    // Query existing sequence numbers in this category
+    // Query and resolve categoryId and existing sequence numbers in this category
     let highestNum = 0;
     let highestOrder = 0;
-    let categoryId = `cat-${cat
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '') || 'geral'}`;
+    let categoryId = extra?.categoryId || '';
+    let categoryName = cat;
 
     if (supabase) {
       try {
         const { data: catRows } = await supabase
           .from('portfolio_categories')
-          .select('id, name')
-          .ilike('name', cat)
-          .limit(1);
-        if (catRows && catRows[0]) {
-          categoryId = catRows[0].id;
+          .select('id, name');
+        if (catRows && catRows.length > 0) {
+          const match = catRows.find(
+            (r: any) =>
+              (categoryId && r.id === categoryId) ||
+              r.id === cat ||
+              r.name.toLowerCase() === cat.toLowerCase()
+          );
+          if (match) {
+            categoryId = match.id;
+            categoryName = match.name;
+          }
         }
+      } catch (err: any) {
+        console.warn('Erro ao consultar categorias no Supabase durante upload:', err.message);
+      }
+    }
 
+    if (!categoryId) {
+      if (cat.startsWith('cat-')) {
+        categoryId = cat;
+      } else {
+        const slug = cat.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+        categoryId = `cat-${slug}`;
+      }
+    }
+
+    // Ensure category exists in Supabase so foreign key constraint NEVER fails
+    if (supabase) {
+      try {
+        const slug = categoryName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+        await supabase.from('portfolio_categories').upsert({
+          id: categoryId,
+          name: categoryName,
+          slug,
+          order_num: 99,
+          active: true,
+          description: `${categoryName} — Categoria do Portfólio`,
+          created_at: new Date().toISOString(),
+        });
+      } catch (catUpsertErr: any) {
+        console.warn('Erro ao garantir categoria no Supabase:', catUpsertErr.message);
+      }
+    }
+
+    if (supabase) {
+      try {
         const { data: existingPhotos } = await supabase
           .from('portfolio_photos')
           .select('number, order_num')
-          .eq('category_name', cat);
+          .or(`category_id.eq.${categoryId},category_name.ilike.${categoryName}`);
 
         (existingPhotos || []).forEach((row: any) => {
           const n = parseInt(row.number || '0', 10);
@@ -1440,6 +1498,42 @@ export const api = {
               }
             } else {
               console.warn('[Supabase DB Insert Warning]:', dbError.message);
+              // Auto-recover if category foreign key constraint was missing
+              if (dbError.message?.includes('foreign key') || (dbError as any).code === '23503') {
+                try {
+                  const slug = categoryName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+                  await supabase.from('portfolio_categories').upsert({
+                    id: categoryId,
+                    name: categoryName,
+                    slug,
+                    order_num: 99,
+                    active: true,
+                    description: `${categoryName} — Categoria do Portfólio`,
+                    created_at: new Date().toISOString(),
+                  });
+                  const { error: retryErr } = await supabase.from('portfolio_photos').upsert({
+                    id: createdPhoto.id,
+                    category_id: categoryId,
+                    category_name: categoryName,
+                    number: createdPhoto.number,
+                    order_num: createdPhoto.order,
+                    image_url: createdPhoto.imageUrl,
+                    thumbnail_url: createdPhoto.thumbnailUrl,
+                    title: createdPhoto.title,
+                    description: createdPhoto.description,
+                    aspect: createdPhoto.aspect,
+                    active: createdPhoto.active,
+                    featured: createdPhoto.featured,
+                    created_at: createdPhoto.createdAt,
+                  });
+                  if (!retryErr) {
+                    allUploaded.push(createdPhoto);
+                    photoSuccess = true;
+                  }
+                } catch (retryCatErr: any) {
+                  console.warn('Retry failed:', retryCatErr.message);
+                }
+              }
             }
           } else {
             console.warn('[Supabase Storage Upload Warning]:', storageError.message);
@@ -1454,8 +1548,8 @@ export const api = {
       // =======================================================================
       if (!photoSuccess) {
         const formData = new FormData();
-        formData.append('category', cat);
-        formData.append('categoryId', cat);
+        formData.append('category', categoryName);
+        formData.append('categoryId', categoryId);
         if (title) formData.append('title', title);
         if (caption) formData.append('description', caption);
         if (active !== undefined) formData.append('active', String(active));

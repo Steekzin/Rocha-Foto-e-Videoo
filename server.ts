@@ -1196,9 +1196,15 @@ async function setupRoutes() {
 
       if (isSupabaseConfigured()) {
         try {
-          const sbCategories = await fetchCategoriesFromSupabase();
+          const [sbCategories, sbPhotos] = await Promise.all([
+            fetchCategoriesFromSupabase(),
+            fetchPortfolioPhotosFromSupabase(),
+          ]);
           if (sbCategories && sbCategories.length > 0) {
             db.portfolioCategories = sbCategories;
+          }
+          if (sbPhotos && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
           }
         } catch (sbErr: any) {
           console.warn('[Supabase Categories Sync Warning]:', sbErr.message);
@@ -1492,11 +1498,18 @@ async function setupRoutes() {
     try {
       const { category, categoryId } = req.query;
 
-      if (isSupabaseConfigured() && (!db.portfolioPhotos || db.portfolioPhotos.length === 0)) {
+      if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (sbPhotos && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const sbMap = new Map<string, PortfolioPhoto>();
+            sbPhotos.forEach((p) => sbMap.set(String(p.id), p));
+            (db.portfolioPhotos || []).forEach((p) => {
+              if (!sbMap.has(String(p.id))) {
+                sbMap.set(String(p.id), p);
+              }
+            });
+            db.portfolioPhotos = Array.from(sbMap.values());
           }
         } catch (e: any) {
           console.warn('[Supabase Public Portfolio Photos Warning]:', e.message);
@@ -1570,11 +1583,18 @@ async function setupRoutes() {
     try {
       const { categoryId, category, status, search } = req.query;
 
-      if (isSupabaseConfigured() && (!db.portfolioPhotos || db.portfolioPhotos.length === 0)) {
+      if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (sbPhotos && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const sbMap = new Map<string, PortfolioPhoto>();
+            sbPhotos.forEach((p) => sbMap.set(String(p.id), p));
+            (db.portfolioPhotos || []).forEach((p) => {
+              if (!sbMap.has(String(p.id))) {
+                sbMap.set(String(p.id), p);
+              }
+            });
+            db.portfolioPhotos = Array.from(sbMap.values());
           }
         } catch (e: any) {
           console.warn('[Supabase Admin Portfolio Photos Warning]:', e.message);
@@ -1665,21 +1685,49 @@ async function setupRoutes() {
           return res.status(400).json({ error: 'Selecione uma categoria para as fotos.' });
         }
 
-        // Find category by ID or Name
+        // Find category by ID or Name from memory or Supabase
         let category = db.portfolioCategories.find(
           (c) =>
             c.id === categoryIdentifier ||
             c.name.toLowerCase() === String(categoryIdentifier).toLowerCase()
         );
 
+        if ((!category || isSupabaseConfigured()) && isSupabaseConfigured()) {
+          try {
+            const [sbCats, sbPhotos] = await Promise.all([
+              fetchCategoriesFromSupabase(),
+              fetchPortfolioPhotosFromSupabase(),
+            ]);
+            if (sbCats && sbCats.length > 0) {
+              db.portfolioCategories = sbCats;
+              category = db.portfolioCategories.find(
+                (c) =>
+                  c.id === categoryIdentifier ||
+                  c.name.toLowerCase() === String(categoryIdentifier).toLowerCase()
+              );
+            }
+            if (sbPhotos && sbPhotos.length > 0) {
+              const sbMap = new Map<string, PortfolioPhoto>();
+              sbPhotos.forEach((p) => sbMap.set(String(p.id), p));
+              (db.portfolioPhotos || []).forEach((p) => {
+                if (!sbMap.has(String(p.id))) sbMap.set(String(p.id), p);
+              });
+              db.portfolioPhotos = Array.from(sbMap.values());
+            }
+          } catch (e: any) {
+            console.warn('[Supabase Sync Before Upload Warning]:', e.message);
+          }
+        }
+
         // Auto-create category if missing
         if (!category) {
           const catName = String(categoryIdentifier).trim();
           const maxOrder = db.portfolioCategories.reduce((max, c) => Math.max(max, c.order || 0), 0);
+          const slug = toSlug(catName) || 'geral';
           category = {
-            id: `cat-${toSlug(catName)}-${Date.now().toString(36)}`,
+            id: `cat-${slug}`,
             name: catName,
-            slug: toSlug(catName),
+            slug,
             order: maxOrder + 1,
             active: true,
             createdAt: new Date().toISOString(),
@@ -2168,9 +2216,16 @@ async function setupRoutes() {
           }
         }
 
+        const matchingCat = db.portfolioCategories.find(
+          (c) =>
+            c.id === clientPhoto.categoryId ||
+            c.name.toLowerCase() === catName.toLowerCase()
+        );
+        const resolvedCategoryId = matchingCat ? matchingCat.id : (clientPhoto.categoryId || `cat-${toSlug(catName)}`);
+
         const photoRecord: PortfolioPhoto = {
           id: clientPhoto.id || `port-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          categoryId: clientPhoto.categoryId || `cat-${toSlug(catName)}`,
+          categoryId: resolvedCategoryId,
           categoryName: catName,
           number: clientPhoto.number || formatPhotoNumber(db.portfolioPhotos.length + 1),
           order: clientPhoto.order || db.portfolioPhotos.length + 1,
