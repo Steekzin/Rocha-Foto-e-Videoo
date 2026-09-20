@@ -1137,7 +1137,31 @@ export const api = {
       console.warn('Aviso ao buscar fotos do servidor (usando fallback no Supabase/local):', err.message);
     }
 
-    // Direct Supabase Sync & Fallback: Fetch all photos from Supabase (paginated chunks so no 1000 limit)
+    const normalizePhoto = (p: any): PortfolioPhoto => {
+      const cat = p.categoryName || p.category_name || p.category || 'Geral';
+      const created = p.createdAt || p.created_at || new Date().toISOString();
+      return {
+        ...p,
+        id: String(p.id),
+        categoryId: p.categoryId || p.category_id || '',
+        category: cat,
+        categoryName: cat,
+        number: p.number ? String(p.number) : '',
+        order: Number(p.order || p.order_num || 1),
+        imageUrl: p.imageUrl || p.image_url || '',
+        thumbnailUrl: p.thumbnailUrl || p.thumbnail_url || p.imageUrl || p.image_url || '',
+        title: p.title || '',
+        description: p.description || p.caption || '',
+        caption: p.description || p.caption || '',
+        aspect: p.aspect || 'portrait',
+        active: p.active !== false,
+        featured: Boolean(p.featured),
+        createdAt: created,
+        created_at: created,
+      };
+    };
+
+    // Direct Supabase Sync: Fetch all photos directly from Supabase as absolute source of truth
     if (supabase) {
       try {
         const allSbRows: any[] = [];
@@ -1169,32 +1193,20 @@ export const api = {
         }
 
         if (allSbRows.length > 0) {
-          const directPhotos: PortfolioPhoto[] = allSbRows.map((row: any) => ({
-            id: row.id,
-            categoryId: row.category_id,
-            categoryName: row.category_name,
-            category: row.category_name,
-            number: row.number,
-            order: row.order_num || 1,
-            imageUrl: row.image_url,
-            thumbnailUrl: row.thumbnail_url || row.image_url,
-            title: row.title,
-            description: row.description || '',
-            caption: row.description || '',
-            aspect: row.aspect || 'portrait',
-            active: row.active !== false,
-            featured: Boolean(row.featured),
-            createdAt: row.created_at || new Date().toISOString(),
-          }));
+          const directPhotos: PortfolioPhoto[] = allSbRows.map(normalizePhoto);
 
-          // Merge: prioritize Supabase rows while keeping any server-only rows
+          // Direct map from Supabase
           const directMap = new Map<string, PortfolioPhoto>();
           directPhotos.forEach((p) => directMap.set(String(p.id), p));
+
+          // Also keep any server-only photos that are already in server memory/db
           (serverPhotos || []).forEach((p) => {
-            if (!directMap.has(String(p.id))) {
-              directMap.set(String(p.id), p);
+            const norm = normalizePhoto(p);
+            if (!directMap.has(String(norm.id))) {
+              directMap.set(String(norm.id), norm);
             }
           });
+
           serverPhotos = Array.from(directMap.values());
         }
       } catch (sbErr: any) {
@@ -1202,18 +1214,7 @@ export const api = {
       }
     }
 
-    const normalizePhoto = (p: any): PortfolioPhoto => {
-      const cat = p.categoryName || p.category || 'Geral';
-      return {
-        ...p,
-        category: cat,
-        categoryName: cat,
-        caption: p.description || p.caption || '',
-      };
-    };
-
-    const normalizedServer = (serverPhotos || []).map(normalizePhoto);
-    const clientPhotos = getClientPortfolioPhotos().map(normalizePhoto);
+    const normalizedPhotos = (serverPhotos || []).map(normalizePhoto);
     const targetCat = params?.categoryId || params?.category;
 
     const matchesCategory = (p: PortfolioPhoto, target: string) => {
@@ -1227,29 +1228,24 @@ export const api = {
       );
     };
 
-    if (clientPhotos.length > 0) {
-      const serverIdSet = new Set(normalizedServer.map((p) => String(p.id)));
-      const uniqueClientPhotos = clientPhotos.filter((p) => !serverIdSet.has(String(p.id)));
-      const combined = [...uniqueClientPhotos, ...normalizedServer];
+    let finalFetched = normalizedPhotos;
 
-      if (targetCat && targetCat !== 'Todos') {
-        return combined.filter((p) => matchesCategory(p, targetCat));
-      }
-      return combined;
+    if (targetCat && targetCat !== 'Todos') {
+      finalFetched = finalFetched.filter((p) => matchesCategory(p, targetCat));
     }
 
-    if (normalizedServer.length === 0) {
-      if (targetCat && targetCat !== 'Todos') {
-        return INITIAL_PORTFOLIO_PHOTOS.filter((p) => matchesCategory(p, targetCat));
-      }
-      return INITIAL_PORTFOLIO_PHOTOS;
+    if (params?.search && typeof params.search === 'string' && params.search.trim()) {
+      const q = params.search.trim().toLowerCase();
+      finalFetched = finalFetched.filter(
+        (p) =>
+          (p.title && p.title.toLowerCase().includes(q)) ||
+          (p.description && p.description.toLowerCase().includes(q)) ||
+          (p.number && String(p.number).toLowerCase().includes(q)) ||
+          (p.categoryName && p.categoryName.toLowerCase().includes(q))
+      );
     }
 
-    const finalFetched = (targetCat && targetCat !== 'Todos')
-      ? normalizedServer.filter((p) => matchesCategory(p, targetCat))
-      : normalizedServer;
-
-    console.info('[FETCH RESULT]', {
+    console.info('[PORTFOLIO PHOTOS LOADED]', {
       total: finalFetched.length,
       targetCat: targetCat || 'Todos',
       latestIds: finalFetched.slice(0, 3).map((p) => p.id),

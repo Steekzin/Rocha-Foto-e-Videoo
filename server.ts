@@ -1501,15 +1501,8 @@ async function setupRoutes() {
       if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
-          if (sbPhotos && sbPhotos.length > 0) {
-            const sbMap = new Map<string, PortfolioPhoto>();
-            sbPhotos.forEach((p) => sbMap.set(String(p.id), p));
-            (db.portfolioPhotos || []).forEach((p) => {
-              if (!sbMap.has(String(p.id))) {
-                sbMap.set(String(p.id), p);
-              }
-            });
-            db.portfolioPhotos = Array.from(sbMap.values());
+          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
           }
         } catch (e: any) {
           console.warn('[Supabase Public Portfolio Photos Warning]:', e.message);
@@ -1520,9 +1513,9 @@ async function setupRoutes() {
         ? db.portfolioCategories
         : INITIAL_PORTFOLIO_CATEGORIES;
 
-      const photoList = Array.isArray(db.portfolioPhotos) && db.portfolioPhotos.length > 0
+      const photoList = Array.isArray(db.portfolioPhotos)
         ? db.portfolioPhotos
-        : INITIAL_PORTFOLIO_PHOTOS;
+        : [];
 
       // Get active category IDs and names
       const activeCategoryIds = new Set(
@@ -1586,24 +1579,17 @@ async function setupRoutes() {
       if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
-          if (sbPhotos && sbPhotos.length > 0) {
-            const sbMap = new Map<string, PortfolioPhoto>();
-            sbPhotos.forEach((p) => sbMap.set(String(p.id), p));
-            (db.portfolioPhotos || []).forEach((p) => {
-              if (!sbMap.has(String(p.id))) {
-                sbMap.set(String(p.id), p);
-              }
-            });
-            db.portfolioPhotos = Array.from(sbMap.values());
+          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
           }
         } catch (e: any) {
           console.warn('[Supabase Admin Portfolio Photos Warning]:', e.message);
         }
       }
 
-      const photoList = Array.isArray(db.portfolioPhotos) && db.portfolioPhotos.length > 0
+      const photoList = Array.isArray(db.portfolioPhotos)
         ? db.portfolioPhotos
-        : INITIAL_PORTFOLIO_PHOTOS;
+        : [];
 
       const catList = Array.isArray(db.portfolioCategories) && db.portfolioCategories.length > 0
         ? db.portfolioCategories

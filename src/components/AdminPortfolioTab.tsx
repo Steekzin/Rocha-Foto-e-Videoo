@@ -1054,8 +1054,10 @@ export const AdminPortfolioTab: React.FC = () => {
     // Ordenação consistente
     const sorted = [...result].sort((a, b) => {
       if (sortOrder === 'newest') {
-        const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        const rawDateA = a.createdAt || (a as any).created_at;
+        const rawDateB = b.createdAt || (b as any).created_at;
+        const dateA = rawDateA ? new Date(rawDateA).getTime() : 0;
+        const dateB = rawDateB ? new Date(rawDateB).getTime() : 0;
         if (dateA !== dateB) return dateB - dateA;
         const numA = parseInt(a.number || '0', 10);
         const numB = parseInt(b.number || '0', 10);
@@ -1106,7 +1108,15 @@ export const AdminPortfolioTab: React.FC = () => {
     return list;
   }, [filteredPhotos, effectiveCurrentPage, pageSize, isAllPages, totalFilteredCount]);
 
-  const isRealPhotos = photos.some((p) => p.imageUrl.startsWith('/portfolio/'));
+  const isSupabaseSource = photos.some((p) => p.imageUrl?.includes('supabase.co'));
+  const isLocalReal = photos.some((p) => p.imageUrl?.startsWith('/portfolio/'));
+  const originLabel = isSupabaseSource
+    ? '✓ Supabase Cloud (Oficial)'
+    : isLocalReal
+    ? '✓ Arquivos Reais da Rocha'
+    : photos.length > 0
+    ? '✓ Base de Dados Real'
+    : 'Nenhuma foto';
   const activePhotosCount = photos.filter((p) => p.active).length;
   const activeCategoriesCount = categories.filter((c) => c.active).length;
 
@@ -1285,8 +1295,8 @@ export const AdminPortfolioTab: React.FC = () => {
 
           <div className="bg-[#0c0e11] p-2.5 rounded-lg border border-[#1e232b]">
             <span className="text-[10px] uppercase text-[#9ca3af] block">Origem das Fotos</span>
-            <span className="text-xs font-semibold text-white block mt-0.5 truncate">
-              {isRealPhotos ? '✓ Arquivos Reais da Rocha' : 'Demonstração'}
+            <span className="text-xs font-semibold text-emerald-400 block mt-0.5 truncate">
+              {originLabel}
             </span>
           </div>
         </div>
