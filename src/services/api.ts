@@ -1389,21 +1389,71 @@ export const api = {
       }
     }
 
+    // Pre-calculate atomic sequence numbers from server sequence endpoint + Supabase
+    highestNum = 0;
+    highestOrder = 0;
+
+    // 1. Try server sequence endpoint (which queries Supabase + server memory)
+    try {
+      const seqRes = await fetch(
+        `${API_BASE}/admin/portfolio/categories/${encodeURIComponent(categoryId)}/next-sequence?count=${files.length}&categoryName=${encodeURIComponent(categoryName)}`,
+        { headers: getAdminHeaders() }
+      );
+      if (seqRes.ok) {
+        const seqData = await seqRes.json();
+        if (seqData && typeof seqData.maxNum === 'number') {
+          highestNum = Math.max(highestNum, seqData.maxNum);
+        }
+        if (seqData && typeof seqData.maxOrder === 'number') {
+          highestOrder = Math.max(highestOrder, seqData.maxOrder);
+        }
+      }
+    } catch (seqErr: any) {
+      console.warn('Erro ao consultar sequência no servidor:', seqErr.message);
+    }
+
+    // 2. Cross-verify directly with Supabase to make 100% sure no numbers are reused
     if (supabase) {
       try {
-        const { data: existingPhotos } = await supabase
-          .from('portfolio_photos')
-          .select('number, order_num')
-          .or(`category_id.eq.${categoryId},category_name.ilike.${categoryName}`);
+        const queries = [];
+        if (categoryId) {
+          queries.push(
+            supabase.from('portfolio_photos').select('number, order_num, title').eq('category_id', categoryId)
+          );
+        }
+        if (categoryName) {
+          queries.push(
+            supabase.from('portfolio_photos').select('number, order_num, title').ilike('category_name', categoryName)
+          );
+        }
 
-        (existingPhotos || []).forEach((row: any) => {
-          const n = parseInt(row.number || '0', 10);
-          if (!isNaN(n) && n > highestNum) highestNum = n;
-          const ord = row.order_num || 0;
-          if (ord > highestOrder) highestOrder = ord;
+        const results = await Promise.all(queries);
+        const combined: any[] = [];
+        results.forEach((r) => {
+          if (r.data) combined.push(...r.data);
         });
+
+        const seenRows = new Set<string>();
+        for (const row of combined) {
+          const key = `${row.number}-${row.order_num}-${row.title}`;
+          if (seenRows.has(key)) continue;
+          seenRows.add(key);
+
+          const m = String(row.number || '').match(/\d+/);
+          if (m) {
+            const n = parseInt(m[0], 10);
+            if (!isNaN(n) && n > highestNum) highestNum = n;
+          }
+          const tMatch = String(row.title || '').match(/#(\d+)/);
+          if (tMatch) {
+            const tn = parseInt(tMatch[1], 10);
+            if (!isNaN(tn) && tn > highestNum) highestNum = tn;
+          }
+          const ord = Number(row.order_num || 0);
+          if (!isNaN(ord) && ord > highestOrder) highestOrder = ord;
+        }
       } catch {
-        // Continue with local defaults
+        // Continue with established highestNum
       }
     }
 
@@ -1426,7 +1476,9 @@ export const api = {
             .replace(/-+/g, '-')
             .replace(/^-|-$/g, '') || 'geral';
 
-          const photoId = `port-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
+          const photoId = typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `port-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
           const cleanFileName = currentFile.name
             .normalize('NFD')
             .replace(/[\u0300-\u036f]/g, '')
@@ -1468,9 +1520,10 @@ export const api = {
               createdAt: new Date().toISOString(),
             };
 
+            // STRICT INSERT: Never upsert, never update or overwrite existing photos
             const { error: dbError } = await supabase
               .from('portfolio_photos')
-              .upsert({
+              .insert({
                 id: createdPhoto.id,
                 category_id: createdPhoto.categoryId,
                 category_name: createdPhoto.categoryName,
@@ -1518,7 +1571,8 @@ export const api = {
                     description: `${categoryName} — Categoria do Portfólio`,
                     created_at: new Date().toISOString(),
                   });
-                  const { error: retryErr } = await supabase.from('portfolio_photos').upsert({
+                  // STRICT INSERT on retry
+                  const { error: retryErr } = await supabase.from('portfolio_photos').insert({
                     id: createdPhoto.id,
                     category_id: categoryId,
                     category_name: categoryName,

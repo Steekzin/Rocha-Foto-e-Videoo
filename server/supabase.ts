@@ -741,6 +741,155 @@ export async function savePortfolioPhotoToSupabase(p: PortfolioPhoto): Promise<v
   }
 }
 
+/**
+ * Calculates the next safe sequence numbers and order numbers for a given category directly from Supabase,
+ * ensuring new uploads never reuse numbers or collide with existing photographs.
+ */
+export async function getNextPortfolioSequenceFromSupabase(
+  categoryId: string,
+  categoryName: string,
+  count: number = 1
+): Promise<{ maxNum: number; maxOrder: number; numbers: string[]; orders: number[] }> {
+  const client = getSupabase();
+  let maxNum = 0;
+  let maxOrder = 0;
+
+  if (client) {
+    try {
+      const queries = [];
+      if (categoryId) {
+        queries.push(
+          client.from('portfolio_photos').select('number, order_num, title').eq('category_id', categoryId)
+        );
+      }
+      if (categoryName) {
+        queries.push(
+          client.from('portfolio_photos').select('number, order_num, title').ilike('category_name', categoryName)
+        );
+      }
+
+      const results = await Promise.all(queries);
+      const combined: any[] = [];
+      results.forEach((r) => {
+        if (r.data) combined.push(...r.data);
+      });
+
+      const seenRows = new Set<string>();
+      for (const row of combined) {
+        const key = `${row.number}-${row.order_num}-${row.title}`;
+        if (seenRows.has(key)) continue;
+        seenRows.add(key);
+
+        const m = String(row.number || '').match(/\d+/);
+        if (m) {
+          const n = parseInt(m[0], 10);
+          if (!isNaN(n) && n > maxNum) maxNum = n;
+        }
+        const tMatch = String(row.title || '').match(/#(\d+)/);
+        if (tMatch) {
+          const tn = parseInt(tMatch[1], 10);
+          if (!isNaN(tn) && tn > maxNum) maxNum = tn;
+        }
+        const ord = Number(row.order_num || 0);
+        if (!isNaN(ord) && ord > maxOrder) maxOrder = ord;
+      }
+    } catch (e: any) {
+      console.warn('[Supabase getNextPortfolioSequence Warning]:', e.message);
+    }
+  }
+
+  const numbers: string[] = [];
+  const orders: number[] = [];
+  for (let i = 1; i <= count; i++) {
+    const n = maxNum + i;
+    numbers.push(String(n).padStart(3, '0'));
+    orders.push(maxOrder + i);
+  }
+
+  return {
+    maxNum,
+    maxOrder,
+    numbers,
+    orders,
+  };
+}
+
+/**
+ * Inserts new portfolio photos into Supabase.
+ * STRICTLY uses .insert() so existing photos are NEVER overwritten, updated, or replaced.
+ */
+export async function insertPortfolioPhotosToSupabase(photosList: PortfolioPhoto[]): Promise<void> {
+  const client = getSupabase();
+  if (!client || photosList.length === 0) return;
+
+  try {
+    // 1. Fetch existing categories to ensure foreign key constraint
+    const { data: existingCats } = await client.from('portfolio_categories').select('id, name');
+    const catMapById = new Map<string, string>();
+    const catMapByName = new Map<string, string>();
+    (existingCats || []).forEach((c: any) => {
+      catMapById.set(c.id, c.name);
+      catMapByName.set(c.name.toLowerCase(), c.id);
+    });
+
+    const rows: any[] = [];
+    for (const p of photosList) {
+      let validCatId = p.categoryId;
+      const catName = p.categoryName || 'Geral';
+
+      if (!catMapById.has(validCatId)) {
+        if (catMapByName.has(catName.toLowerCase())) {
+          validCatId = catMapByName.get(catName.toLowerCase())!;
+        } else {
+          const slug = catName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+          validCatId = `cat-${slug}`;
+          await client.from('portfolio_categories').upsert({
+            id: validCatId,
+            name: catName,
+            slug,
+            order_num: 99,
+            active: true,
+            description: `${catName} — Categoria do Portfólio`,
+            created_at: new Date().toISOString(),
+          });
+          catMapById.set(validCatId, catName);
+          catMapByName.set(catName.toLowerCase(), validCatId);
+        }
+      }
+
+      rows.push({
+        id: p.id,
+        category_id: validCatId,
+        category_name: p.categoryName || catMapById.get(validCatId) || 'Geral',
+        number: p.number,
+        order_num: p.order || 1,
+        image_url: p.imageUrl,
+        thumbnail_url: p.thumbnailUrl || p.imageUrl,
+        title: p.title || `${p.categoryName} #${p.number}`,
+        description: p.description || '',
+        aspect: p.aspect || 'portrait',
+        active: p.active !== false,
+        featured: Boolean(p.featured),
+        created_at: p.createdAt || new Date().toISOString(),
+      });
+    }
+
+    // Insert in batches using STRICT .insert() (never upsert)
+    const BATCH = 50;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const slice = rows.slice(i, i + BATCH);
+      const { error } = await client.from('portfolio_photos').insert(slice);
+      if (error) {
+        console.error('[Supabase Insert Error]:', error.message);
+        throw error;
+      }
+    }
+  } catch (err: any) {
+    console.error('[Supabase] Erro ao inserir novas fotos no Supabase:', err.message);
+    throw err;
+  }
+}
+
 export async function syncPortfolioPhotosToSupabase(photosList: PortfolioPhoto[]): Promise<void> {
   const client = getSupabase();
   if (!client || photosList.length === 0) return;

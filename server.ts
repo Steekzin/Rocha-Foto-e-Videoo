@@ -56,6 +56,8 @@ import {
   fetchPortfolioPhotosFromSupabase,
   savePortfolioPhotoToSupabase,
   syncPortfolioPhotosToSupabase,
+  insertPortfolioPhotosToSupabase,
+  getNextPortfolioSequenceFromSupabase,
   deletePortfolioPhotoFromSupabase,
   deleteBatchPortfolioPhotosFromSupabase,
   uploadToSupabaseStorage,
@@ -1480,7 +1482,84 @@ async function setupRoutes() {
   // PHOTOS MANAGEMENT API
   // ==========================================
 
-  // Helper to calculate next sequential photo number for a category
+  // Helper to calculate next sequential photo sequence for a category from Supabase + memory
+  async function resolveCategorySequence(catId: string, catName?: string, count: number = 1) {
+    const catObj = db.portfolioCategories.find(
+      (c) => c.id === catId || c.name.toLowerCase() === String(catName || catId).toLowerCase()
+    );
+    const resolvedId = catObj ? catObj.id : catId;
+    const resolvedName = catObj ? catObj.name : (catName || '');
+
+    // 1. Get from Supabase directly
+    let sbSeq = { maxNum: 0, maxOrder: 0, numbers: [] as string[], orders: [] as number[] };
+    if (isSupabaseConfigured()) {
+      try {
+        sbSeq = await getNextPortfolioSequenceFromSupabase(resolvedId, resolvedName, count);
+      } catch (e: any) {
+        console.warn('[Supabase Sequence Fetch Warning]:', e.message);
+      }
+    }
+
+    // 2. Also compare with in-memory db.portfolioPhotos to ensure recently added items are respected
+    let memMaxNum = sbSeq.maxNum;
+    let memMaxOrder = sbSeq.maxOrder;
+    const catNameLower = resolvedName.toLowerCase();
+
+    (db.portfolioPhotos || []).forEach((p) => {
+      const matchCat =
+        p.categoryId === resolvedId ||
+        (p.categoryName && p.categoryName.toLowerCase() === catNameLower) ||
+        ((p as any).category && String((p as any).category).toLowerCase() === catNameLower);
+      if (matchCat) {
+        const m = String(p.number || '').match(/\d+/);
+        if (m) {
+          const n = parseInt(m[0], 10);
+          if (!isNaN(n) && n > memMaxNum) memMaxNum = n;
+        }
+        const tMatch = String(p.title || '').match(/#(\d+)/);
+        if (tMatch) {
+          const tn = parseInt(tMatch[1], 10);
+          if (!isNaN(tn) && tn > memMaxNum) memMaxNum = tn;
+        }
+        const ord = Number(p.order || 0);
+        if (!isNaN(ord) && ord > memMaxOrder) memMaxOrder = ord;
+      }
+    });
+
+    const numbers: string[] = [];
+    const orders: number[] = [];
+    for (let i = 1; i <= count; i++) {
+      const num = memMaxNum + i;
+      numbers.push(formatPhotoNumber(num));
+      orders.push(memMaxOrder + i);
+    }
+
+    return {
+      maxNum: memMaxNum,
+      maxOrder: memMaxOrder,
+      nextNumber: memMaxNum + 1,
+      nextOrder: memMaxOrder + 1,
+      numbers,
+      orders,
+    };
+  }
+
+  // Next sequence API for atomic category sequence reservation
+  app.get('/api/admin/portfolio/categories/:categoryId/next-sequence', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { categoryId } = req.params;
+      const count = Math.max(1, parseInt(req.query.count as string, 10) || 1);
+      const categoryName = (req.query.categoryName as string) || '';
+
+      const seq = await resolveCategorySequence(categoryId, categoryName, count);
+      return res.json({ success: true, ...seq });
+    } catch (err: any) {
+      console.error('[Next Sequence Error]:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao calcular sequência' });
+    }
+  });
+
+  // Legacy helper
   function getNextCategoryPhotoNumber(catId: string): string {
     const photosInCat = db.portfolioPhotos.filter((p) => p.categoryId === catId);
     let maxNum = 0;
@@ -1729,21 +1808,8 @@ async function setupRoutes() {
         const safeCategoryFolder = category.name.replace(/[/\\?%*:|"<>]/g, '-').trim();
         const targetDir = path.join(PORTFOLIO_DIR, safeCategoryFolder);
 
-        // Calculate base sequential number and order
-        const catNameLower = category.name.toLowerCase();
-        const photosInCat = db.portfolioPhotos.filter(
-          (p) =>
-            p.categoryId === category!.id ||
-            (p.categoryName && p.categoryName.toLowerCase() === catNameLower) ||
-            ((p as any).category && (p as any).category.toLowerCase() === catNameLower)
-        );
-        let highestNum = 0;
-        let highestOrder = 0;
-        photosInCat.forEach((p) => {
-          const n = parseInt(p.number, 10);
-          if (!isNaN(n) && n > highestNum) highestNum = n;
-          if ((p.order || 0) > highestOrder) highestOrder = p.order;
-        });
+        // Pre-reserve atomic sequence numbers from Supabase and database memory
+        const seqReservation = await resolveCategorySequence(category.id, category.name, files.length);
 
         const uploadedPhotos: PortfolioPhoto[] = [];
         const uploadErrors: { file: string; error: string }[] = [];
@@ -1758,7 +1824,9 @@ async function setupRoutes() {
           try {
             const rawFileName = path.basename(file.originalname || `foto_${idx + 1}.jpg`);
             const ext = (rawFileName.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-            const photoId = `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
+            const photoId = typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `port-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 9)}`;
             let imageUrl = '';
 
             let mimeType = file.mimetype;
@@ -1807,8 +1875,8 @@ async function setupRoutes() {
               imageUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
             }
 
-            const currentSeq = highestNum + uploadedPhotos.length + 1;
-            const formattedNumber = formatPhotoNumber(currentSeq);
+            const formattedNumber = seqReservation.numbers[idx] || formatPhotoNumber(seqReservation.maxNum + idx + 1);
+            const assignedOrder = seqReservation.orders[idx] || (seqReservation.maxOrder + idx + 1);
             const autoTitle = `${category.name} #${formattedNumber}`;
             const autoDesc = `${category.name} — Fotografia original Rocha Foto & Vídeo`;
 
@@ -1817,7 +1885,7 @@ async function setupRoutes() {
               categoryId: category.id,
               categoryName: category.name,
               number: formattedNumber,
-              order: highestOrder + uploadedPhotos.length + 1,
+              order: assignedOrder,
               imageUrl,
               thumbnailUrl: imageUrl,
               title: req.body.title && req.body.title.trim() ? req.body.title.trim() : autoTitle,
@@ -1839,12 +1907,12 @@ async function setupRoutes() {
           }
         }
 
-        // Persist to Supabase Database
+        // Persist strictly as NEW records to Supabase Database (never upsert)
         if (isSupabaseConfigured() && uploadedPhotos.length > 0) {
           try {
-            await syncPortfolioPhotosToSupabase(uploadedPhotos);
+            await insertPortfolioPhotosToSupabase(uploadedPhotos);
           } catch (sbErr: any) {
-            console.error('[Supabase Photo Upload Sync Error]:', sbErr.message);
+            console.error('[Supabase Photo Upload Insert Error]:', sbErr.message);
           }
         }
 
@@ -2209,12 +2277,20 @@ async function setupRoutes() {
         );
         const resolvedCategoryId = matchingCat ? matchingCat.id : (clientPhoto.categoryId || `cat-${toSlug(catName)}`);
 
+        let assignedNumber = clientPhoto.number;
+        let assignedOrder = clientPhoto.order;
+        if (!assignedNumber) {
+          const seq = await resolveCategorySequence(resolvedCategoryId, catName, 1);
+          assignedNumber = seq.numbers[0];
+          assignedOrder = seq.orders[0];
+        }
+
         const photoRecord: PortfolioPhoto = {
-          id: clientPhoto.id || `port-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          id: clientPhoto.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `port-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`),
           categoryId: resolvedCategoryId,
           categoryName: catName,
-          number: clientPhoto.number || formatPhotoNumber(db.portfolioPhotos.length + 1),
-          order: clientPhoto.order || db.portfolioPhotos.length + 1,
+          number: assignedNumber,
+          order: assignedOrder || 1,
           imageUrl: finalImageUrl,
           thumbnailUrl: finalImageUrl,
           title: clientPhoto.title,
