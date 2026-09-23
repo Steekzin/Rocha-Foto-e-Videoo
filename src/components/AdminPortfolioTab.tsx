@@ -209,6 +209,27 @@ export const AdminPortfolioTab: React.FC = () => {
       let photosList = results[1].status === 'fulfilled' ? results[1].value : [];
       const legacy = results[2].status === 'fulfilled' ? results[2].value : [];
 
+      // Safeguard: If photosList is empty but legacy items exist from /api/portfolio, populate them
+      if ((!photosList || photosList.length === 0) && legacy && legacy.length > 0) {
+        console.info('[PHOTO RECOVERY] Recuperando fotos a partir da lista geral pública:', legacy.length);
+        photosList = legacy.map((item: any, idx: number) => ({
+          id: String(item.id || `photo-${idx}`),
+          categoryId: item.categoryId || (cats[0]?.id) || 'cat-casamentos',
+          categoryName: item.categoryName || item.category || (cats[0]?.name) || 'Casamentos',
+          category: item.categoryName || item.category || (cats[0]?.name) || 'Casamentos',
+          number: item.number ? String(item.number) : String(idx + 1).padStart(3, '0'),
+          order: Number(item.order || idx + 1),
+          imageUrl: item.imageUrl || item.url || '',
+          thumbnailUrl: item.thumbnailUrl || item.imageUrl || item.url || '',
+          title: item.title || '',
+          description: item.description || '',
+          aspect: item.aspect || 'portrait',
+          active: item.active !== false,
+          featured: Boolean(item.featured),
+          createdAt: item.createdAt || new Date().toISOString(),
+        }));
+      }
+
       // If specific freshly uploaded photos were provided, ensure they are preserved during replica propagation
       if (options?.forceKeepPhotos && options.forceKeepPhotos.length > 0) {
         const idSet = new Set(photosList.map((p) => String(p.id)));

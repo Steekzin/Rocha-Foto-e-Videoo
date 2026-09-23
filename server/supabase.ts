@@ -67,6 +67,17 @@ export function getSupabase(): SupabaseClient | null {
   return supabaseInstance;
 }
 
+export function toSlug(text: string): string {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'geral';
+}
+
 export async function testSupabaseConnection(): Promise<{
   configured: boolean;
   connected: boolean;
@@ -823,49 +834,81 @@ export async function insertPortfolioPhotosToSupabase(photosList: PortfolioPhoto
   if (!client || photosList.length === 0) return;
 
   try {
-    // 1. Fetch existing categories to ensure foreign key constraint
-    const { data: existingCats } = await client.from('portfolio_categories').select('id, name');
-    const catMapById = new Map<string, string>();
-    const catMapByName = new Map<string, string>();
-    (existingCats || []).forEach((c: any) => {
-      catMapById.set(c.id, c.name);
-      catMapByName.set(c.name.toLowerCase(), c.id);
-    });
+    // 1. Fetch existing categories to ensure foreign key constraint and avoid duplicate key violations
+    const { data: existingCats } = await client.from('portfolio_categories').select('id, name, slug');
+    const safeDefaultCatId = existingCats?.[0]?.id || 'cat-casamentos';
+
+    const normalizeCatText = (t: string) =>
+      (t || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+
+    const findExistingCat = (id?: string, name?: string) => {
+      if (!existingCats || existingCats.length === 0) return null;
+      const targetId = (id || '').trim();
+      const targetName = (name || '').trim();
+      const normTargetName = normalizeCatText(targetName);
+      const slugTarget = toSlug(targetName);
+
+      return (
+        existingCats.find((c: any) => {
+          if (targetId && (c.id === targetId || c.id.toLowerCase() === targetId.toLowerCase())) return true;
+          if (targetName && c.name.toLowerCase().trim() === targetName.toLowerCase()) return true;
+          if (normTargetName && normalizeCatText(c.name) === normTargetName) return true;
+          if (slugTarget && (c.slug === slugTarget || toSlug(c.name) === slugTarget)) return true;
+          return false;
+        }) || null
+      );
+    };
 
     const rows: any[] = [];
     for (const p of photosList) {
       let validCatId = p.categoryId;
-      const catName = p.categoryName || 'Geral';
+      let validCatName = p.categoryName || 'Geral';
 
-      if (!catMapById.has(validCatId)) {
-        if (catMapByName.has(catName.toLowerCase())) {
-          validCatId = catMapByName.get(catName.toLowerCase())!;
-        } else {
-          const slug = catName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
-          validCatId = `cat-${slug}`;
-          await client.from('portfolio_categories').upsert({
-            id: validCatId,
-            name: catName,
-            slug,
+      const existing = findExistingCat(p.categoryId, p.categoryName);
+      if (existing) {
+        validCatId = existing.id;
+        validCatName = existing.name;
+      } else {
+        // Safe category creation with unique slug
+        const baseSlug = toSlug(validCatName) || 'geral';
+        const uniqueSlug = `${baseSlug}-${Date.now().toString(36).slice(2, 7)}`;
+        const newCatId = `cat-${uniqueSlug}`;
+        try {
+          const { error: insertCatErr } = await client.from('portfolio_categories').insert({
+            id: newCatId,
+            name: validCatName,
+            slug: uniqueSlug,
             order_num: 99,
             active: true,
-            description: `${catName} — Categoria do Portfólio`,
+            description: `${validCatName} — Categoria do Portfólio`,
             created_at: new Date().toISOString(),
           });
-          catMapById.set(validCatId, catName);
-          catMapByName.set(catName.toLowerCase(), validCatId);
+          if (!insertCatErr) {
+            validCatId = newCatId;
+            existingCats?.push({ id: newCatId, name: validCatName, slug: uniqueSlug });
+          } else {
+            console.warn('[Category Fallback to Default]:', insertCatErr.message);
+            validCatId = safeDefaultCatId;
+          }
+        } catch (catErr: any) {
+          console.warn('[Category create exception, fallback]:', catErr.message);
+          validCatId = safeDefaultCatId;
         }
       }
 
       rows.push({
         id: p.id,
         category_id: validCatId,
-        category_name: p.categoryName || catMapById.get(validCatId) || 'Geral',
+        category_name: validCatName,
         number: p.number,
         order_num: p.order || 1,
         image_url: p.imageUrl,
         thumbnail_url: p.thumbnailUrl || p.imageUrl,
-        title: p.title || `${p.categoryName} #${p.number}`,
+        title: p.title || `${validCatName} #${p.number}`,
         description: p.description || '',
         aspect: p.aspect || 'portrait',
         active: p.active !== false,
