@@ -68,6 +68,7 @@ export const AdminPortfolioTab: React.FC = () => {
 
   // Anti-Race Condition Reference to discard stale fetch responses
   const activeFetchIdRef = useRef<number>(0);
+  const deletedPhotoIdsRef = useRef<Set<string>>(new Set());
 
   // Data states
   const [categories, setCategories] = useState<PortfolioCategory[]>([]);
@@ -248,14 +249,27 @@ export const AdminPortfolioTab: React.FC = () => {
       });
 
       // Supabase is the definitive source of truth: populate directly from database results
-      setPhotos(() => {
+      setPhotos((prev) => {
         const photoMap = new Map<string, PortfolioPhoto>();
-        (photosList || []).forEach((p) => {
-          if (p && p.id) photoMap.set(String(p.id), p);
+        // 1. Preserve existing in-memory photos unless explicitly deleted
+        (prev || []).forEach((p) => {
+          if (p && p.id && !deletedPhotoIdsRef.current.has(String(p.id))) {
+            photoMap.set(String(p.id), p);
+          }
         });
+        // 2. Add fetched photos unless explicitly deleted
+        (photosList || []).forEach((p) => {
+          if (p && p.id && !deletedPhotoIdsRef.current.has(String(p.id))) {
+            photoMap.set(String(p.id), p);
+          }
+        });
+        // 3. Add any forced photos
         if (options?.forceKeepPhotos && options.forceKeepPhotos.length > 0) {
           options.forceKeepPhotos.forEach((p) => {
-            if (p && p.id) photoMap.set(String(p.id), p);
+            if (p && p.id) {
+              deletedPhotoIdsRef.current.delete(String(p.id));
+              photoMap.set(String(p.id), p);
+            }
           });
         }
         return Array.from(photoMap.values());
@@ -482,8 +496,13 @@ export const AdminPortfolioTab: React.FC = () => {
       setCurrentUploadingFileName('');
       if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
 
-      // Atualizar filtro para a categoria de upload e ir para a página 1
-      setSelectedCategoryFilter(uploadCategory);
+      // Remove newly uploaded photo IDs from deleted set if any existed
+      (res.photos || []).forEach((p) => {
+        deletedPhotoIdsRef.current.delete(String(p.id));
+      });
+
+      // Manter visualização em Todas as Fotos para que o usuário veja imediatamente todas as suas fotos juntas
+      setSelectedCategoryFilter('Todos');
       setCurrentPage(1);
 
       // Immediately add the new photos to the state so UI reflects the upload instantly
@@ -588,11 +607,13 @@ export const AdminPortfolioTab: React.FC = () => {
 
   const confirmDeletePhoto = async () => {
     if (!photoToDelete) return;
+    const deletedId = String(photoToDelete.id);
+    deletedPhotoIdsRef.current.add(deletedId);
     try {
       setLoading(true);
       await api.deletePortfolioPhoto(photoToDelete.id);
-      setPhotos((prev) => prev.filter((p) => String(p.id) !== String(photoToDelete.id)));
-      setSelectedPhotoIds((prev) => prev.filter((id) => id !== String(photoToDelete.id)));
+      setPhotos((prev) => prev.filter((p) => String(p.id) !== deletedId));
+      setSelectedPhotoIds((prev) => prev.filter((id) => id !== deletedId));
       setStatusMessage({
         type: 'success',
         text: `Fotografia #${photoToDelete.number || photoToDelete.title} removida com sucesso.`,
@@ -608,10 +629,12 @@ export const AdminPortfolioTab: React.FC = () => {
 
   const confirmBatchDelete = async () => {
     if (selectedPhotoIds.length === 0) return;
+    const idsToDelete = [...selectedPhotoIds];
+    idsToDelete.forEach((id) => deletedPhotoIdsRef.current.add(String(id)));
     try {
       setLoading(true);
-      const res = await api.batchDeletePortfolioPhotos(selectedPhotoIds);
-      setPhotos((prev) => prev.filter((p) => !selectedPhotoIds.includes(String(p.id))));
+      const res = await api.batchDeletePortfolioPhotos(idsToDelete);
+      setPhotos((prev) => prev.filter((p) => !idsToDelete.includes(String(p.id))));
       setStatusMessage({
         type: 'success',
         text: res.message || `${res.count} fotos excluídas com sucesso.`,

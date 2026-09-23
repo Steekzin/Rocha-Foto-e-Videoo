@@ -1567,7 +1567,10 @@ async function setupRoutes() {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const photoMap = new Map<string, PortfolioPhoto>();
+            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
+            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
+            db.portfolioPhotos = Array.from(photoMap.values());
           }
         } catch (e: any) {
           console.warn('[Supabase Public Portfolio Photos Warning]:', e.message);
@@ -1645,7 +1648,10 @@ async function setupRoutes() {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const photoMap = new Map<string, PortfolioPhoto>();
+            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
+            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
+            db.portfolioPhotos = Array.from(photoMap.values());
           }
         } catch (e: any) {
           console.warn('[Supabase Admin Portfolio Photos Warning]:', e.message);
@@ -1951,7 +1957,10 @@ async function setupRoutes() {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const photoMap = new Map<string, PortfolioPhoto>();
+            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
+            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
+            db.portfolioPhotos = Array.from(photoMap.values());
             photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
           }
         } catch (e: any) {
@@ -2140,7 +2149,10 @@ async function setupRoutes() {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
           if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            db.portfolioPhotos = sbPhotos;
+            const photoMap = new Map<string, PortfolioPhoto>();
+            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
+            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
+            db.portfolioPhotos = Array.from(photoMap.values());
             photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
           }
         } catch (e: any) {

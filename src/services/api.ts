@@ -1234,6 +1234,16 @@ export const api = {
       }
     }
 
+    // Always merge client photos saved in localStorage to ensure zero photo loss
+    const clientPhotos = getClientPortfolioPhotos();
+    if (clientPhotos.length > 0) {
+      const existingIds = new Set((serverPhotos || []).map((p) => String(p.id)));
+      const freshClientPhotos = clientPhotos.filter((p) => !existingIds.has(String(p.id)));
+      if (freshClientPhotos.length > 0) {
+        serverPhotos = [...freshClientPhotos.map(normalizePhoto), ...(serverPhotos || [])];
+      }
+    }
+
     const normalizedPhotos = (serverPhotos || []).map(normalizePhoto);
     const targetCat = params?.categoryId || params?.category;
 
