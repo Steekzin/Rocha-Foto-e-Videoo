@@ -226,12 +226,9 @@ export const AdminPortfolioTab: React.FC = () => {
         categoriesCount: cats.length,
       });
 
-      // Update photos with merge protection: existing state + server results + fresh uploads
-      setPhotos((prev) => {
+      // Supabase is the definitive source of truth: populate directly from database results
+      setPhotos(() => {
         const photoMap = new Map<string, PortfolioPhoto>();
-        (prev || []).forEach((p) => {
-          if (p && p.id) photoMap.set(String(p.id), p);
-        });
         (photosList || []).forEach((p) => {
           if (p && p.id) photoMap.set(String(p.id), p);
         });

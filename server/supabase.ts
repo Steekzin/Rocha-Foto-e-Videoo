@@ -509,14 +509,14 @@ export async function uploadToSupabaseStorage(
     .join('/');
 
   try {
-    // 12-second safety timeout to avoid hanging reverse-proxy connections
+    // 60-second safety timeout to allow large photographer files to upload smoothly
     const uploadPromise = client.storage.from(bucket).upload(cleanPath, buffer, {
       contentType: contentType || 'image/jpeg',
       upsert: true,
     });
 
     const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout de 12s ao enviar para Supabase Storage')), 12000)
+      setTimeout(() => reject(new Error('Timeout de 60s ao enviar para Supabase Storage')), 60000)
     );
 
     const result = (await Promise.race([uploadPromise, timeoutPromise])) as any;
@@ -882,6 +882,21 @@ export async function insertPortfolioPhotosToSupabase(photosList: PortfolioPhoto
       if (error) {
         console.error('[Supabase Insert Error]:', error.message);
         throw error;
+      }
+
+      // Verification: Immediately query to confirm records are persisted in Supabase
+      const sliceIds = slice.map((s) => s.id);
+      const { data: verifiedRows, error: verifyErr } = await client
+        .from('portfolio_photos')
+        .select('id, category_id, number')
+        .in('id', sliceIds);
+
+      if (verifyErr) {
+        console.warn('[Supabase Verification Warning]:', verifyErr.message);
+      } else {
+        console.info(
+          `[Supabase Verified] ${verifiedRows?.length || 0} de ${slice.length} fotos confirmadas no banco.`
+        );
       }
     }
   } catch (err: any) {

@@ -1644,43 +1644,12 @@ export const api = {
         }
       }
 
-      // =======================================================================
-      // CHANNEL 3: FAILOVER VIA LOCAL CLIENT STORAGE & BASE64 SYNC
-      // =======================================================================
       if (!photoSuccess) {
-        try {
-          console.info(`[Upload] Ativando canal de persistência local para "${currentFile.name}"...`);
-          const base64Data = await fileToBase64(currentFile);
-          const currentSeq = highestNum + allUploaded.length + 1;
-          const formattedNumber = String(currentSeq).padStart(3, '0');
-          const fallbackPhotoPayload: PortfolioPhoto = {
-            id: `port-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
-            categoryId,
-            categoryName: cat,
-            category: cat,
-            number: formattedNumber,
-            order: highestOrder + allUploaded.length + 1,
-            title: title || `${cat} #${formattedNumber}`,
-            description: caption || `${cat} — Fotografia original Rocha Foto & Vídeo`,
-            imageUrl: base64Data,
-            thumbnailUrl: base64Data,
-            aspect: 'portrait',
-            active: active !== undefined ? active : true,
-            featured: false,
-            createdAt: new Date().toISOString(),
-          };
-
-          saveClientPortfolioPhotos([fallbackPhotoPayload]);
-          allUploaded.push(fallbackPhotoPayload);
-          photoSuccess = true;
-        } catch (failoverErr: any) {
-          console.warn(`[Upload Failover Warning]:`, failoverErr.message);
-        }
-      }
-
-      if (!photoSuccess) {
-        console.warn(`[Upload] Falha ao enviar foto ${currentFile.name}:`, lastErr?.message || lastErr);
-        failedFiles.push({ name: currentFile.name, error: lastErr?.message || 'Falha no envio' });
+        console.warn(`[Upload] Falha ao enviar foto ${currentFile.name} para o Supabase:`, lastErr?.message || lastErr);
+        failedFiles.push({
+          name: currentFile.name,
+          error: lastErr?.message || 'Falha ao salvar a fotografia no banco de dados Supabase',
+        });
       }
 
       if (onProgress) {

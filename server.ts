@@ -1192,9 +1192,9 @@ async function setupRoutes() {
   // ==========================================
 
   // Get Categories (Public: active only, Admin: all with includeInactive=true)
-  app.get('/api/portfolio/categories', async (req: Request, res: Response) => {
+  app.get(['/api/admin/portfolio/categories', '/api/portfolio/categories'], async (req: Request, res: Response) => {
     try {
-      const includeInactive = req.query.includeInactive === 'true';
+      const includeInactive = req.query.includeInactive === 'true' || req.path.includes('/admin/');
 
       if (isSupabaseConfigured()) {
         try {
@@ -1913,6 +1913,10 @@ async function setupRoutes() {
             await insertPortfolioPhotosToSupabase(uploadedPhotos);
           } catch (sbErr: any) {
             console.error('[Supabase Photo Upload Insert Error]:', sbErr.message);
+            return res.status(500).json({
+              error: `Erro ao persistir fotografias no banco de dados Supabase: ${sbErr.message}`,
+              details: sbErr.message,
+            });
           }
         }
 
@@ -1944,7 +1948,18 @@ async function setupRoutes() {
   app.put('/api/admin/portfolio/photos/:id', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
+      let photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
+      if (photoIndex === -1 && isSupabaseConfigured()) {
+        try {
+          const sbPhotos = await fetchPortfolioPhotosFromSupabase();
+          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
+            photoIndex = db.portfolioPhotos.findIndex((p) => String(p.id) === String(id));
+          }
+        } catch (e: any) {
+          console.warn('[Supabase Sync on PUT Photo Warning]:', e.message);
+        }
+      }
       if (photoIndex === -1) {
         return res.status(404).json({ error: 'Fotografia não encontrada.' });
       }
@@ -2121,8 +2136,19 @@ async function setupRoutes() {
   app.delete('/api/admin/portfolio/photos/:id', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
-      const legacyItem = db.portfolio ? db.portfolio.find((p) => String(p.id) === String(id)) : null;
+      let photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
+      let legacyItem = db.portfolio ? db.portfolio.find((p) => String(p.id) === String(id)) : null;
+      if (!photo && !legacyItem && isSupabaseConfigured()) {
+        try {
+          const sbPhotos = await fetchPortfolioPhotosFromSupabase();
+          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
+            db.portfolioPhotos = sbPhotos;
+            photo = db.portfolioPhotos.find((p) => String(p.id) === String(id));
+          }
+        } catch (e: any) {
+          console.warn('[Supabase Sync on DELETE Photo Warning]:', e.message);
+        }
+      }
       const target = photo || legacyItem;
       if (!target) {
         return res.status(404).json({ error: 'Fotografia não encontrada.' });
