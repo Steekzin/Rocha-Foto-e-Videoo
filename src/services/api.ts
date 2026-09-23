@@ -1346,17 +1346,37 @@ export const api = {
       throw new Error('Nenhuma fotografia selecionada para envio.');
     }
 
-    // Process files sequentially one-by-one:
-    // - Direct Supabase Cloud Storage & Database upload (No 4.5MB Vercel limit)
-    // - Sequential numerical order guaranteed (#001, #002, #003...)
-    // - Real-time progress updates per photo
-    // - Automatic fallback to multipart upload and local client storage
+    // Fast & Reliable Upload Pipeline:
+    // 1. PRIMARY: Batch Upload to Server (/api/admin/portfolio/photos/upload) - Does everything in ONE request ("tudo de uma vez")
+    // 2. FALLBACK: Direct Supabase Cloud Storage & Database upload if server is unreachable
     const allUploaded: PortfolioPhoto[] = [];
     const failedFiles: { name: string; error: string }[] = [];
 
-    // Query and resolve categoryId and existing sequence numbers in this category
-    let highestNum = 0;
-    let highestOrder = 0;
+    const progressCb = extra?.onProgress || onProgress;
+    const notifyProgress = (current: number, total: number, fileName?: string) => {
+      if (!progressCb) return;
+      try {
+        if (typeof progressCb === 'function') {
+          // If function expects an object with metadata
+          progressCb({
+            current,
+            total,
+            percent: Math.round((current / (total || 1)) * 100),
+            fileName: fileName || '',
+          });
+        }
+      } catch {
+        try {
+          if (typeof progressCb === 'function') {
+            (progressCb as any)(current, total);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    // Query and resolve categoryId and categoryName safely
     let categoryId = extra?.categoryId || '';
     let categoryName = cat;
 
@@ -1364,21 +1384,24 @@ export const api = {
       try {
         const { data: catRows } = await supabase
           .from('portfolio_categories')
-          .select('id, name');
+          .select('id, name, slug');
         if (catRows && catRows.length > 0) {
-          const match = catRows.find(
-            (r: any) =>
-              (categoryId && r.id === categoryId) ||
-              r.id === cat ||
-              r.name.toLowerCase() === cat.toLowerCase()
-          );
+          const match = catRows.find((r: any) => {
+            if (categoryId && (r.id === categoryId || r.id.toLowerCase() === categoryId.toLowerCase())) return true;
+            if (r.id === cat || r.id.toLowerCase() === cat.toLowerCase()) return true;
+            if (r.name.toLowerCase().trim() === cat.toLowerCase().trim()) return true;
+            if (toSlug(r.name) === toSlug(cat)) return true;
+            return false;
+          });
           if (match) {
             categoryId = match.id;
             categoryName = match.name;
+          } else if (!categoryId && catRows.length > 0) {
+            categoryId = catRows[0].id;
           }
         }
       } catch (err: any) {
-        console.warn('Erro ao consultar categorias no Supabase durante upload:', err.message);
+        console.warn('Aviso ao consultar categorias no Supabase:', err.message);
       }
     }
 
@@ -1386,34 +1409,57 @@ export const api = {
       if (cat.startsWith('cat-')) {
         categoryId = cat;
       } else {
-        const slug = cat.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
+        const slug = toSlug(cat) || 'geral';
         categoryId = `cat-${slug}`;
       }
     }
 
-    // Ensure category exists in Supabase so foreign key constraint NEVER fails
-    if (supabase) {
-      try {
-        const slug = categoryName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-') || 'geral';
-        await supabase.from('portfolio_categories').upsert({
-          id: categoryId,
-          name: categoryName,
-          slug,
-          order_num: 99,
-          active: true,
-          description: `${categoryName} — Categoria do Portfólio`,
-          created_at: new Date().toISOString(),
-        });
-      } catch (catUpsertErr: any) {
-        console.warn('Erro ao garantir categoria no Supabase:', catUpsertErr.message);
+    // =========================================================================
+    // STEP 1: BATCH UPLOAD DIRECT TO SERVER (ALL FILES AT ONCE - "TUDO DE UMA VEZ")
+    // =========================================================================
+    try {
+      notifyProgress(1, files.length, files[0]?.name);
+
+      const batchFormData = new FormData();
+      batchFormData.append('category', categoryName);
+      batchFormData.append('categoryId', categoryId);
+      if (title) batchFormData.append('title', title);
+      if (caption) batchFormData.append('description', caption);
+      if (active !== undefined) batchFormData.append('active', String(active));
+      for (const f of files) {
+        batchFormData.append('files', f);
       }
+
+      const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: batchFormData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.photos) && data.photos.length > 0) {
+          notifyProgress(files.length, files.length, files[files.length - 1]?.name);
+          return {
+            success: true,
+            count: data.photos.length,
+            photos: data.photos,
+            category: data.category || categoryName,
+          };
+        }
+      }
+      console.warn('[Batch upload failed, automatically executing direct Supabase fallback...]', res.status);
+    } catch (batchErr: any) {
+      console.warn('[Batch upload network issue, executing direct Supabase fallback...]', batchErr.message);
     }
 
-    // Pre-calculate atomic sequence numbers from server sequence endpoint + Supabase
-    highestNum = 0;
-    highestOrder = 0;
+    // =========================================================================
+    // STEP 2: SEAMLESS DIRECT SUPABASE FALLBACK (Never fails the user, finishes job)
+    // =========================================================================
+    let highestNum = 0;
+    let highestOrder = 0;
 
-    // 1. Try server sequence endpoint (which queries Supabase + server memory)
+    // Pre-calculate atomic sequence numbers
     try {
       const seqRes = await fetch(
         `${API_BASE}/admin/portfolio/categories/${encodeURIComponent(categoryId)}/next-sequence?count=${files.length}&categoryName=${encodeURIComponent(categoryName)}`,
@@ -1421,59 +1467,30 @@ export const api = {
       );
       if (seqRes.ok) {
         const seqData = await seqRes.json();
-        if (seqData && typeof seqData.maxNum === 'number') {
-          highestNum = Math.max(highestNum, seqData.maxNum);
-        }
-        if (seqData && typeof seqData.maxOrder === 'number') {
-          highestOrder = Math.max(highestOrder, seqData.maxOrder);
-        }
+        if (seqData && typeof seqData.maxNum === 'number') highestNum = Math.max(highestNum, seqData.maxNum);
+        if (seqData && typeof seqData.maxOrder === 'number') highestOrder = Math.max(highestOrder, seqData.maxOrder);
       }
-    } catch (seqErr: any) {
-      console.warn('Erro ao consultar sequência no servidor:', seqErr.message);
+    } catch {
+      // Continue with established highestNum
     }
 
-    // 2. Cross-verify directly with Supabase to make 100% sure no numbers are reused
     if (supabase) {
       try {
-        const queries = [];
-        if (categoryId) {
-          queries.push(
-            supabase.from('portfolio_photos').select('number, order_num, title').eq('category_id', categoryId)
-          );
-        }
-        if (categoryName) {
-          queries.push(
-            supabase.from('portfolio_photos').select('number, order_num, title').ilike('category_name', categoryName)
-          );
-        }
-
-        const results = await Promise.all(queries);
-        const combined: any[] = [];
-        results.forEach((r) => {
-          if (r.data) combined.push(...r.data);
-        });
-
-        const seenRows = new Set<string>();
-        for (const row of combined) {
-          const key = `${row.number}-${row.order_num}-${row.title}`;
-          if (seenRows.has(key)) continue;
-          seenRows.add(key);
-
+        const { data: sbPhotos } = await supabase
+          .from('portfolio_photos')
+          .select('number, order_num, title')
+          .or(`category_id.eq.${categoryId},category_name.ilike.${categoryName}`);
+        (sbPhotos || []).forEach((row: any) => {
           const m = String(row.number || '').match(/\d+/);
           if (m) {
             const n = parseInt(m[0], 10);
             if (!isNaN(n) && n > highestNum) highestNum = n;
           }
-          const tMatch = String(row.title || '').match(/#(\d+)/);
-          if (tMatch) {
-            const tn = parseInt(tMatch[1], 10);
-            if (!isNaN(tn) && tn > highestNum) highestNum = tn;
-          }
           const ord = Number(row.order_num || 0);
           if (!isNaN(ord) && ord > highestOrder) highestOrder = ord;
-        }
+        });
       } catch {
-        // Continue with established highestNum
+        // Continue
       }
     }
 
@@ -1482,20 +1499,9 @@ export const api = {
       let photoSuccess = false;
       let lastErr: any = null;
 
-      // =======================================================================
-      // CHANNEL 1: DIRECT SUPABASE CLOUD STORAGE & DATABASE
-      // (Direct CDN upload, NO Vercel 4.5MB limit, NO FUNCTION_INVOCATION_FAILED)
-      // =======================================================================
       if (supabase) {
         try {
-          const categorySlug = cat
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '') || 'geral';
-
+          const categorySlug = toSlug(categoryName) || 'geral';
           const photoId = typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
             : `port-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
@@ -1520,41 +1526,14 @@ export const api = {
             const publicUrl = urlData?.publicUrl || storagePath;
             const currentSeq = highestNum + allUploaded.length + 1;
             const formattedNumber = String(currentSeq).padStart(3, '0');
-            const autoTitle = title || `${cat} #${formattedNumber}`;
-            const autoDesc = caption || `${cat} — Fotografia original Rocha Foto & Vídeo`;
-
-            // Robust category matching to guarantee foreign key constraint in Supabase
-            let validCatId = categoryId;
-            let validCatName = cat;
-            try {
-              const { data: sbCats } = await supabase.from('portfolio_categories').select('id, name, slug');
-              if (sbCats && sbCats.length > 0) {
-                const normCat = cat.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-                const matched = sbCats.find(
-                  (c: any) =>
-                    c.id === validCatId ||
-                    c.id.toLowerCase() === (validCatId || '').toLowerCase() ||
-                    c.name.toLowerCase().trim() === cat.toLowerCase().trim() ||
-                    c.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim() === normCat ||
-                    c.slug === toSlug(cat)
-                );
-                if (matched) {
-                  validCatId = matched.id;
-                  validCatName = matched.name;
-                } else if (!validCatId) {
-                  validCatId = sbCats[0].id;
-                  validCatName = sbCats[0].name;
-                }
-              }
-            } catch {
-              // Proceed with existing validCatId
-            }
+            const autoTitle = title || `${categoryName} #${formattedNumber}`;
+            const autoDesc = caption || `${categoryName} — Fotografia original Rocha Foto & Vídeo`;
 
             const createdPhoto: PortfolioPhoto = {
               id: photoId,
-              categoryId: validCatId,
-              categoryName: validCatName,
-              category: validCatName,
+              categoryId: categoryId,
+              categoryName: categoryName,
+              category: categoryName,
               number: formattedNumber,
               order: highestOrder + allUploaded.length + 1,
               imageUrl: publicUrl,
@@ -1567,7 +1546,6 @@ export const api = {
               createdAt: new Date().toISOString(),
             };
 
-            // STRICT INSERT: Never upsert, never update or overwrite existing photos
             const { error: dbError } = await supabase
               .from('portfolio_photos')
               .insert({
@@ -1590,7 +1568,6 @@ export const api = {
               allUploaded.push(createdPhoto);
               photoSuccess = true;
 
-              // Synchronize photo metadata to server memory/file DB
               try {
                 await fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
                   method: 'POST',
@@ -1600,105 +1577,40 @@ export const api = {
                   },
                   body: JSON.stringify({ photos: [createdPhoto] }),
                 });
-              } catch (syncNotifyErr) {
-                console.warn('[Sync Notify Server Warning]:', syncNotifyErr);
+              } catch {
+                // Ignore background sync error
               }
             } else {
-              console.warn('[Supabase DB Insert Warning]:', dbError.message);
+              lastErr = new Error(dbError.message);
             }
           } else {
-            console.warn('[Supabase Storage Upload Warning]:', storageError.message);
+            lastErr = new Error(storageError.message);
           }
         } catch (directSbErr: any) {
-          console.warn('[Direct Supabase Upload Skipped]:', directSbErr.message || directSbErr);
-        }
-      }
-
-      // =======================================================================
-      // CHANNEL 2: SERVER MULTIPART UPLOAD (Fallback)
-      // =======================================================================
-      if (!photoSuccess) {
-        const formData = new FormData();
-        formData.append('category', categoryName);
-        formData.append('categoryId', categoryId);
-        if (title) formData.append('title', title);
-        if (caption) formData.append('description', caption);
-        if (active !== undefined) formData.append('active', String(active));
-        formData.append('files', currentFile);
-
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            const res = await fetch(`${API_BASE}/admin/portfolio/photos/upload`, {
-              method: 'POST',
-              headers: getAdminHeaders(),
-              body: formData,
-            });
-
-            if (res.ok) {
-              const data = await res.json();
-              if (data && Array.isArray(data.photos) && data.photos.length > 0) {
-                allUploaded.push(...data.photos);
-                photoSuccess = true;
-                break;
-              }
-            } else {
-              const errText = await res.text().catch(() => '');
-              lastErr = new Error(`Status ${res.status}: ${errText.slice(0, 100)}`);
-            }
-          } catch (err: any) {
-            lastErr = err;
-            if (attempt < 2) {
-              await new Promise((resolve) => setTimeout(resolve, 400));
-            }
-          }
+          lastErr = directSbErr;
         }
       }
 
       if (!photoSuccess) {
-        console.warn(`[Upload] Falha ao enviar foto ${currentFile.name} para o Supabase:`, lastErr?.message || lastErr);
         failedFiles.push({
           name: currentFile.name,
-          error: lastErr?.message || 'Falha ao salvar a fotografia no banco de dados Supabase',
+          error: lastErr?.message || 'Falha ao processar arquivo',
         });
       }
 
-      if (onProgress) {
-        onProgress(i + 1, files.length);
-      }
+      notifyProgress(i + 1, files.length, currentFile.name);
     }
 
-    // If at least one photo was uploaded successfully, verify presence in Supabase and return success
     if (allUploaded.length > 0) {
-      if (supabase) {
-        try {
-          const uploadedIds = allUploaded.map((p) => p.id);
-          const { data: verifiedRows } = await supabase
-            .from('portfolio_photos')
-            .select('id, category_id, number')
-            .in('id', uploadedIds);
-
-          console.info('[PHOTO INSERT - SUPABASE CONFIRMED]', {
-            totalUploaded: allUploaded.length,
-            totalConfirmedInSupabase: verifiedRows?.length || 0,
-            confirmedIds: (verifiedRows || []).map((r: any) => r.id),
-            categoryId,
-            numbers: (verifiedRows || []).map((r: any) => r.number),
-          });
-        } catch (verifyErr: any) {
-          console.warn('[PHOTO INSERT Verification Warning]:', verifyErr?.message);
-        }
-      }
-
       return {
         success: true,
         count: allUploaded.length,
         photos: allUploaded,
-        category: cat,
+        category: categoryName,
       };
     }
 
-    // If all failed, throw real descriptive error
-    const firstErr = failedFiles[0]?.error || 'Erro ao salvar fotografias no Supabase';
+    const firstErr = failedFiles[0]?.error || 'Erro ao enviar fotografias para o servidor';
     throw new Error(firstErr);
   },
 
