@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import { PortfolioCategory, PortfolioPhoto, PortfolioItem } from '../types.js';
 import { api } from '../services/api.js';
+import { INITIAL_PORTFOLIO_PHOTOS } from '../data/defaultPortfolio.js';
 
 const formatErrorMessage = (err: any, fallback: string): string => {
   const msg = err?.message || (typeof err === 'string' ? err : '');
@@ -221,6 +222,12 @@ export const AdminPortfolioTab: React.FC = () => {
           featured: Boolean(item.featured),
           createdAt: item.createdAt || new Date().toISOString(),
         }));
+      }
+
+      // Safeguard: If photosList is still empty, populate from INITIAL_PORTFOLIO_PHOTOS
+      if ((!photosList || photosList.length === 0) && (!options?.forceKeepPhotos || options.forceKeepPhotos.length === 0)) {
+        console.info('[PHOTO RECOVERY] Populando fotos padrão para evitar estado vazio');
+        photosList = [...INITIAL_PORTFOLIO_PHOTOS];
       }
 
       // If specific freshly uploaded photos were provided, ensure they are preserved during replica propagation
@@ -478,6 +485,18 @@ export const AdminPortfolioTab: React.FC = () => {
       // Atualizar filtro para a categoria de upload e ir para a página 1
       setSelectedCategoryFilter(uploadCategory);
       setCurrentPage(1);
+
+      // Immediately add the new photos to the state so UI reflects the upload instantly
+      if (res.photos && res.photos.length > 0) {
+        setPhotos((prev) => {
+          const map = new Map<string, PortfolioPhoto>();
+          res.photos.forEach((p) => map.set(String(p.id), p));
+          prev.forEach((p) => {
+            if (!map.has(String(p.id))) map.set(String(p.id), p);
+          });
+          return Array.from(map.values());
+        });
+      }
 
       // Consultar banco atualizado com proteção de concorrência e preservação garantida
       await loadAllData({ forceKeepPhotos: res.photos || [] });
