@@ -1560,17 +1560,18 @@ async function setupRoutes() {
 
   // Public & General Portfolio API (Only active photos from active categories)
   app.get('/api/portfolio', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     try {
       const { category, categoryId } = req.query;
 
       if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
-          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            const photoMap = new Map<string, PortfolioPhoto>();
-            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
-            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
-            db.portfolioPhotos = Array.from(photoMap.values());
+          if (Array.isArray(sbPhotos)) {
+            db.portfolioPhotos = sbPhotos;
           }
         } catch (e: any) {
           console.warn('[Supabase Public Portfolio Photos Warning]:', e.message);
@@ -1641,17 +1642,18 @@ async function setupRoutes() {
 
   // Admin Get All Portfolio Photos (Admin & Public with filters & search)
   app.get(['/api/admin/portfolio/photos', '/api/portfolio/photos'], async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     try {
       const { categoryId, category, status, search } = req.query;
 
       if (isSupabaseConfigured()) {
         try {
           const sbPhotos = await fetchPortfolioPhotosFromSupabase();
-          if (Array.isArray(sbPhotos) && sbPhotos.length > 0) {
-            const photoMap = new Map<string, PortfolioPhoto>();
-            (db.portfolioPhotos || []).forEach((p) => photoMap.set(String(p.id), p));
-            sbPhotos.forEach((p) => photoMap.set(String(p.id), p));
-            db.portfolioPhotos = Array.from(photoMap.values());
+          if (Array.isArray(sbPhotos)) {
+            db.portfolioPhotos = sbPhotos;
           }
         } catch (e: any) {
           console.warn('[Supabase Admin Portfolio Photos Warning]:', e.message);

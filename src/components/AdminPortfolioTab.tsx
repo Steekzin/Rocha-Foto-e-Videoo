@@ -248,26 +248,19 @@ export const AdminPortfolioTab: React.FC = () => {
         categoriesCount: cats.length,
       });
 
-      // Supabase is the definitive source of truth: populate directly from database results
-      setPhotos((prev) => {
+      // Supabase & Server are the definitive source of truth: populate directly from database results
+      setPhotos(() => {
         const photoMap = new Map<string, PortfolioPhoto>();
-        // 1. Preserve existing in-memory photos unless explicitly deleted
-        (prev || []).forEach((p) => {
-          if (p && p.id && !deletedPhotoIdsRef.current.has(String(p.id))) {
-            photoMap.set(String(p.id), p);
-          }
-        });
-        // 2. Add fetched photos unless explicitly deleted
+        // 1. Add freshly fetched photos from database unless marked for deletion
         (photosList || []).forEach((p) => {
           if (p && p.id && !deletedPhotoIdsRef.current.has(String(p.id))) {
             photoMap.set(String(p.id), p);
           }
         });
-        // 3. Add any forced photos
+        // 2. Add any forced photos (e.g. freshly uploaded during replica propagation)
         if (options?.forceKeepPhotos && options.forceKeepPhotos.length > 0) {
           options.forceKeepPhotos.forEach((p) => {
-            if (p && p.id) {
-              deletedPhotoIdsRef.current.delete(String(p.id));
+            if (p && p.id && !deletedPhotoIdsRef.current.has(String(p.id))) {
               photoMap.set(String(p.id), p);
             }
           });

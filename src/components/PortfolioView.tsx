@@ -359,7 +359,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                         const target = e.currentTarget;
                         target.onerror = null;
                         target.src =
-                          'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80';
+                          'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000"><rect width="800" height="1000" fill="%2312151a"/><circle cx="400" cy="460" r="44" fill="none" stroke="%23c99e64" stroke-width="2" opacity="0.6"/><circle cx="400" cy="460" r="18" fill="%23c99e64" opacity="0.6"/><text x="50%" y="550" dominant-baseline="middle" text-anchor="middle" fill="%23c99e64" font-family="sans-serif" font-size="16" letter-spacing="3" opacity="0.8">ROCHA FOTO &amp; VÍDEO</text></svg>';
                       }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-70 group-hover:opacity-95 transition-opacity" />

@@ -1275,11 +1275,9 @@ export const api = {
       );
     }
 
-    if (finalFetched.length === 0 && (!params?.search || !params.search.trim())) {
+    // Only fallback to INITIAL_PORTFOLIO_PHOTOS if the entire database is completely empty (no photos exist anywhere)
+    if (finalFetched.length === 0 && (!serverPhotos || serverPhotos.length === 0) && (!params?.search || !params.search.trim()) && (!targetCat || targetCat === 'Todos')) {
       finalFetched = INITIAL_PORTFOLIO_PHOTOS.map(normalizePhoto);
-      if (targetCat && targetCat !== 'Todos') {
-        finalFetched = finalFetched.filter((p) => matchesCategory(p, targetCat));
-      }
     }
 
     console.info('[PORTFOLIO PHOTOS LOADED]', {
@@ -2106,55 +2104,30 @@ export const api = {
     }
   },
 
-  // Legacy Portfolio compatibility
+  // Portfolio retrieval with full Supabase synchronization and zero stale cache
   async getPortfolio(category?: string): Promise<PortfolioItem[]> {
-    const url = category && category !== 'Todos' ? `${API_BASE}/portfolio?category=${encodeURIComponent(category)}` : `${API_BASE}/portfolio`;
-    let serverItems: PortfolioItem[] = [];
-    try {
-      const res = await fetch(url);
-      serverItems = await parseJsonResponse<PortfolioItem[]>(res, 'Erro ao carregar portfólio');
-    } catch (err: any) {
-      console.warn('Aviso ao carregar portfolio do servidor:', err);
-    }
+    const photos = await this.getPortfolioPhotos({
+      category: category && category !== 'Todos' ? category : undefined,
+      activeOnly: true,
+      isAdmin: false,
+    });
 
-    const clientPhotos = getClientPortfolioPhotos();
-    if (clientPhotos.length > 0) {
-      const serverIdSet = new Set(serverItems.map((p) => String(p.id)));
-      const clientItems: PortfolioItem[] = clientPhotos
-        .filter((p) => !serverIdSet.has(String(p.id)) && p.active)
-        .map((p) => ({
-          id: p.id,
-          title: p.title,
-          category: p.categoryName || (p as any).category || 'Geral',
-          categoryId: p.categoryId,
-          categoryName: p.categoryName || (p as any).category || 'Geral',
-          number: p.number,
-          order: p.order,
-          imageUrl: p.imageUrl,
-          thumbnailUrl: p.thumbnailUrl,
-          caption: p.description,
-          description: p.description,
-          aspect: p.aspect,
-          active: p.active,
-          featured: p.featured,
-          createdAt: p.createdAt,
-        }));
-      const combined = [...clientItems, ...serverItems];
-      if (category && category !== 'Todos') {
-        const catLower = category.toLowerCase();
-        return combined.filter((i) => (i.category || '').toLowerCase() === catLower);
-      }
-      return combined.map((i) => ({
-        ...i,
-        category: i.category || (i as any).categoryName || 'Geral',
-        categoryName: (i as any).categoryName || i.category || 'Geral',
-      }));
-    }
-
-    return serverItems.map((i) => ({
-      ...i,
-      category: i.category || (i as any).categoryName || 'Geral',
-      categoryName: (i as any).categoryName || i.category || 'Geral',
+    return photos.map((p) => ({
+      id: p.id,
+      title: p.title || `${p.categoryName || 'Fotografia'} #${p.number || ''}`,
+      category: p.categoryName || (p as any).category || 'Geral',
+      categoryId: p.categoryId,
+      categoryName: p.categoryName || (p as any).category || 'Geral',
+      number: p.number,
+      order: p.order,
+      imageUrl: p.imageUrl,
+      thumbnailUrl: p.thumbnailUrl || p.imageUrl,
+      caption: p.description || p.caption || '',
+      description: p.description || p.caption || '',
+      aspect: p.aspect,
+      active: p.active,
+      featured: p.featured,
+      createdAt: p.createdAt,
     }));
   },
 
