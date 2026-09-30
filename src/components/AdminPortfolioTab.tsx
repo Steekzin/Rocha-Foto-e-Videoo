@@ -160,7 +160,7 @@ export const AdminPortfolioTab: React.FC = () => {
   const [dataVersion, setDataVersion] = useState(0);
 
   // Pagination states for high-capacity photo management (supports 50, 100, 500, 1000+ photos)
-  const [pageSize, setPageSize] = useState<number>(48);
+  const [pageSize, setPageSize] = useState<number>(96);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Load all categories and photos with anti-race condition guard and fault-tolerant fallbacks
@@ -494,8 +494,8 @@ export const AdminPortfolioTab: React.FC = () => {
         deletedPhotoIdsRef.current.delete(String(p.id));
       });
 
-      // Manter visualização em Todas as Fotos para que o usuário veja imediatamente todas as suas fotos juntas
-      setSelectedCategoryFilter('Todos');
+      // Mostrar imediatamente a categoria onde as fotos foram adicionadas para verificação imediata
+      setSelectedCategoryFilter(uploadCategory || 'Todos');
       setCurrentPage(1);
 
       // Immediately add the new photos to the state so UI reflects the upload instantly
@@ -1656,10 +1656,10 @@ export const AdminPortfolioTab: React.FC = () => {
                     }}
                     className="bg-[#0c0e11] border border-[#262b35] rounded-md px-2 py-1 text-xs text-white focus:outline-none focus:border-[#c99e64]"
                   >
-                    <option value={24}>24</option>
-                    <option value={48}>48</option>
-                    <option value={96}>96</option>
-                    <option value={-1}>Todas ({totalFilteredCount})</option>
+                    <option value={48}>48 por página</option>
+                    <option value={96}>96 por página</option>
+                    <option value={150}>150 por página</option>
+                    <option value={-1}>Todas as Fotos ({totalFilteredCount})</option>
                   </select>
                 </div>
 

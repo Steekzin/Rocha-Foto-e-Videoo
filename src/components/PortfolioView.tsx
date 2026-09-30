@@ -110,11 +110,20 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
   }, [categories, items]);
 
   const filteredItems = React.useMemo(() => {
+    const toSlugSimple = (t: string) =>
+      (t || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]/g, '-');
+
     return items.filter((item) => {
       const itemCat = (item.category || (item as any).categoryName || '').trim();
       const matchesCategory =
         selectedCategory === 'Todos' ||
-        itemCat.toLowerCase() === selectedCategory.toLowerCase();
+        itemCat.toLowerCase() === selectedCategory.toLowerCase() ||
+        toSlugSimple(itemCat) === toSlugSimple(selectedCategory);
       if (!matchesCategory) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
