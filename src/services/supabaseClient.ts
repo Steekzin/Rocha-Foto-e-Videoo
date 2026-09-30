@@ -12,14 +12,41 @@ const getFallbackKey = () => {
   }
 };
 
-const supabaseUrl = metaEnv.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
-const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || getFallbackKey();
+function isValidSupabaseUrl(url: string | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  if (!url.startsWith('https://')) return false;
+  if (
+    url.includes('your-project') ||
+    url.includes('seu-projeto') ||
+    url.includes('placeholder') ||
+    url.includes('example.com')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isValidSupabaseKey(key: string | undefined): boolean {
+  if (!key || typeof key !== 'string') return false;
+  if (
+    key.includes('your-anon') ||
+    key.includes('your-service-role') ||
+    key.includes('sua-chave') ||
+    key.includes('placeholder')
+  ) {
+    return false;
+  }
+  return key.length > 20;
+}
+
+const rawUrl = metaEnv.VITE_SUPABASE_URL || metaEnv.SUPABASE_URL;
+const rawKey = metaEnv.VITE_SUPABASE_ANON_KEY || metaEnv.SUPABASE_ANON_KEY;
+
+const supabaseUrl = isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = isValidSupabaseKey(rawKey) ? rawKey : getFallbackKey();
 
 export const isClientSupabaseConfigured = Boolean(
-  supabaseUrl &&
-    supabaseAnonKey &&
-    supabaseUrl.startsWith('https://') &&
-    !supabaseUrl.includes('your-project')
+  isValidSupabaseUrl(supabaseUrl) && isValidSupabaseKey(supabaseAnonKey)
 );
 
 export const supabase: SupabaseClient | null = isClientSupabaseConfigured

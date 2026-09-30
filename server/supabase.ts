@@ -22,19 +22,44 @@ let supabaseInstance: SupabaseClient | null = null;
 let connectionTested = false;
 let isConnected = false;
 
+function isValidSupabaseUrl(url: string | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  if (!url.startsWith('https://')) return false;
+  if (
+    url.includes('your-project') ||
+    url.includes('seu-projeto') ||
+    url.includes('placeholder') ||
+    url.includes('example.com')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isValidSupabaseKey(key: string | undefined): boolean {
+  if (!key || typeof key !== 'string') return false;
+  if (
+    key.includes('your-anon') ||
+    key.includes('your-service-role') ||
+    key.includes('sua-chave') ||
+    key.includes('placeholder')
+  ) {
+    return false;
+  }
+  return key.length > 20;
+}
+
 export function isSupabaseConfigured(): boolean {
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
-  const key =
+  const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const rawKey =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    DEFAULT_SUPABASE_KEY;
+    process.env.VITE_SUPABASE_ANON_KEY;
 
-  if (!url || !key) return false;
-  if (url.includes('your-project') || url.includes('placeholder')) return false;
-  if (key.includes('your-anon') || key.includes('your-service-role')) return false;
+  const url = isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL;
+  const key = isValidSupabaseKey(rawKey) ? rawKey : DEFAULT_SUPABASE_KEY;
 
-  return Boolean(url.startsWith('https://'));
+  return Boolean(isValidSupabaseUrl(url) && isValidSupabaseKey(key));
 }
 
 export function getSupabase(): SupabaseClient | null {
@@ -43,12 +68,14 @@ export function getSupabase(): SupabaseClient | null {
   }
 
   if (!supabaseInstance) {
-    const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL) as string;
-    // Prefer service role key for backend operations to bypass RLS, fallback to anon key
-    const key = (process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const rawKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      DEFAULT_SUPABASE_KEY) as string;
+      process.env.VITE_SUPABASE_ANON_KEY;
+
+    const url = (isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL) as string;
+    const key = (isValidSupabaseKey(rawKey) ? rawKey : DEFAULT_SUPABASE_KEY) as string;
 
     try {
       supabaseInstance = createClient(url, key, {

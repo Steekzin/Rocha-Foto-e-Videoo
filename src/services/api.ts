@@ -1539,10 +1539,14 @@ export const api = {
             batchSuccess = true;
           }
         } else {
-          console.warn(`[Batch upload server returned ${res.status}, executing direct Supabase upload for this batch...]`);
+          const errData = await res.json().catch(() => null);
+          const errMsg = errData?.error || `Erro HTTP ${res.status}`;
+          console.warn(`[Batch upload server returned ${res.status}]:`, errMsg);
+          fileBatch.forEach((f) => failedFiles.push({ name: f.name, error: errMsg }));
         }
       } catch (serverErr: any) {
         console.warn('[Server upload network issue, using direct Supabase fallback]:', serverErr.message);
+        fileBatch.forEach((f) => failedFiles.push({ name: f.name, error: serverErr.message || 'Falha de rede' }));
       }
 
       // 2. If server upload failed for this batch, upload directly to Supabase Storage & Database
@@ -1619,6 +1623,10 @@ export const api = {
             if (!dbError) {
               allUploaded.push(createdPhoto);
               batchSuccess = true;
+              // Remove from failedFiles if it succeeded in Supabase fallback
+              const fIdx = failedFiles.findIndex((ff) => ff.name === currentFile.name);
+              if (fIdx !== -1) failedFiles.splice(fIdx, 1);
+
               // Sync in background to server
               fetch(`${API_BASE}/admin/portfolio/photos/sync-client`, {
                 method: 'POST',
