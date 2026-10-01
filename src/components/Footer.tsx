@@ -140,7 +140,7 @@ export const Footer: React.FC<FooterProps> = ({ setActiveTab }) => {
               </div>
               <div className="flex items-center gap-2.5">
                 <Phone className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />
-                <span>(38) 9106-5054 / (38) 3084-3444</span>
+                <span>(38) 3321-1534</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <Mail className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />
