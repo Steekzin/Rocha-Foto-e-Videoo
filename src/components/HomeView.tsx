@@ -217,7 +217,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ setActiveTab }) => {
           {/* Right Column: Studio Fachada Rocha Foto & Vídeo (R. Juca Prates, 610) */}
           <div className="relative h-[440px] md:h-[600px] overflow-hidden group order-1 md:order-2 rounded-2xl border border-black/10 dark:border-white/10 shadow-lg">
             <img
-              src="/rocha_fachada.jpg"
+              src="/rocha_fachada.jpg?v=2"
               alt="Fachada Rocha Foto & Vídeo - Studio R. Juca Prates, 610 Centro"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-700"

@@ -28,7 +28,7 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
   const [photos, setPhotos] = useState<{ perfil: string; cerimonia: string; fachada: string }>({
     perfil: localStorage.getItem('rocha_inst_perfil') || '/fotografo_rocha_perfil.jpg',
     cerimonia: localStorage.getItem('rocha_inst_cerimonia') || '/fotografo_rocha_cerimonia.jpg',
-    fachada: localStorage.getItem('rocha_inst_fachada') || '/rocha_fachada.jpg',
+    fachada: '/rocha_fachada.jpg?v=' + Date.now(),
   });
 
   useEffect(() => {
@@ -40,12 +40,44 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
             ...prev,
             perfil: localStorage.getItem('rocha_inst_perfil') || res.perfil || prev.perfil,
             cerimonia: localStorage.getItem('rocha_inst_cerimonia') || res.cerimonia || prev.cerimonia,
-            fachada: localStorage.getItem('rocha_inst_fachada') || res.fachada || prev.fachada,
+            fachada: res.fachada || prev.fachada,
           }));
         }
       })
       .catch(() => {});
   }, []);
+
+  const handleUploadOriginal = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    slot: 'perfil' | 'cerimonia' | 'fachada'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const previewUrl = URL.createObjectURL(file);
+    setPhotos((prev) => ({ ...prev, [slot]: previewUrl }));
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const b64 = reader.result as string;
+        if (b64 && b64.length < 5 * 1024 * 1024) {
+          localStorage.setItem(`rocha_inst_${slot}`, b64);
+        }
+      } catch {}
+    };
+    reader.readAsDataURL(file);
+
+    try {
+      const res = await api.uploadInstitutionalPhoto(slot, file);
+      if (res && res.url) {
+        setPhotos((prev) => ({ ...prev, [slot]: res.url }));
+        localStorage.setItem(`rocha_inst_${slot}`, res.url);
+      }
+    } catch (err: any) {
+      console.warn('Erro ao sincronizar com o servidor:', err);
+    }
+  };
 
   const serviceCategories = [
     {
@@ -174,8 +206,8 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
             </div>
           </div>
 
-          {/* 3 Fotos Institucionais Lado a Lado de Forma Elegante e Proporcional */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+          {/* 2 Fotos Institucionais Lado a Lado de Forma Elegante e Proporcional */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-stretch max-w-5xl mx-auto">
             {/* 1. Fachada */}
             <div
               className={`relative group overflow-hidden rounded-2xl border transition-all duration-300 shadow-lg ${
@@ -184,7 +216,7 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                   : 'bg-[#121418] border-[#22272f] hover:border-[#c99e64]/60'
               }`}
             >
-              <div className="w-full aspect-[3/4] overflow-hidden bg-black/40">
+              <div className="w-full h-80 sm:h-96 md:h-[400px] overflow-hidden bg-black/40">
                 <img
                   src={photos.fachada}
                   alt="Studio Rocha Foto & Vídeo - Fachada"
@@ -193,12 +225,27 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                 />
               </div>
               <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
-              <div className="absolute bottom-4 left-4 right-4">
-                <span className="text-[#c99e64] text-[10px] font-semibold uppercase tracking-wider block mb-0.5">
+              <div className="absolute bottom-5 left-5 right-5">
+                <span className="text-[#c99e64] text-[11px] font-semibold uppercase tracking-wider block mb-1">
                   Estúdio Próprio
                 </span>
-                <h3 className="text-white font-serif-luxury text-lg font-normal">Nossa Fachada</h3>
+                <h3 className="text-white font-serif-luxury text-xl font-normal">Nossa Fachada</h3>
               </div>
+
+              {/* Botão sutil visível apenas ao passar o mouse para o proprietário atualizar */}
+              <label
+                title="Carregar imagem da Fachada (100% original)"
+                className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-3 right-3 bg-black/85 hover:bg-black text-[10px] text-amber-300 border border-amber-500/40 rounded-lg px-2.5 py-1 cursor-pointer flex items-center gap-1.5 shadow-md z-20"
+              >
+                <Camera className="w-3 h-3" />
+                <span>Trocar Fachada</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleUploadOriginal(e, 'fachada')}
+                />
+              </label>
             </div>
 
             {/* 2. Fotógrafo Profissional */}
@@ -209,7 +256,7 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                   : 'bg-[#121418] border-[#22272f] hover:border-[#c99e64]/60'
               }`}
             >
-              <div className="w-full aspect-[3/4] overflow-hidden bg-black/40">
+              <div className="w-full h-80 sm:h-96 md:h-[400px] overflow-hidden bg-black/40">
                 <img
                   src={photos.perfil}
                   alt="Fotógrafo Rocha - Rocha Foto & Vídeo"
@@ -218,37 +265,27 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                 />
               </div>
               <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
-              <div className="absolute bottom-4 left-4 right-4">
-                <span className="text-[#c99e64] text-[10px] font-semibold uppercase tracking-wider block mb-0.5">
+              <div className="absolute bottom-5 left-5 right-5">
+                <span className="text-[#c99e64] text-[11px] font-semibold uppercase tracking-wider block mb-1">
                   Fotógrafo Profissional
                 </span>
-                <h3 className="text-white font-serif-luxury text-lg font-normal">Direção & Olhar</h3>
+                <h3 className="text-white font-serif-luxury text-xl font-normal">Direção & Olhar</h3>
               </div>
-            </div>
 
-            {/* 3. Em Cobertura */}
-            <div
-              className={`relative group overflow-hidden rounded-2xl border transition-all duration-300 shadow-lg ${
-                isLight
-                  ? 'bg-white border-gray-200 hover:border-[#c99e64]/60'
-                  : 'bg-[#121418] border-[#22272f] hover:border-[#c99e64]/60'
-              }`}
-            >
-              <div className="w-full aspect-[3/4] overflow-hidden bg-black/40">
-                <img
-                  src={photos.cerimonia}
-                  alt="Fotógrafo em ação durante celebração de casamento"
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover object-center transition-transform duration-500 group-hover:scale-105"
+              {/* Botão sutil visível apenas ao passar o mouse para o proprietário atualizar */}
+              <label
+                title="Carregar foto do fotógrafo (100% original)"
+                className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-3 right-3 bg-black/85 hover:bg-black text-[10px] text-amber-300 border border-amber-500/40 rounded-lg px-2.5 py-1 cursor-pointer flex items-center gap-1.5 shadow-md z-20"
+              >
+                <Camera className="w-3 h-3" />
+                <span>Trocar Foto</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleUploadOriginal(e, 'perfil')}
                 />
-              </div>
-              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
-              <div className="absolute bottom-4 left-4 right-4">
-                <span className="text-[#c99e64] text-[10px] font-semibold uppercase tracking-wider block mb-0.5">
-                  Em Cobertura
-                </span>
-                <h3 className="text-white font-serif-luxury text-lg font-normal">Produção em Ação</h3>
-              </div>
+              </label>
             </div>
           </div>
         </div>

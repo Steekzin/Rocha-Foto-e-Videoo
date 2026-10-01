@@ -2268,13 +2268,41 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              {/* Foto 1: Direção & Olhar */}
+              {/* Foto 1: Fachada */}
               <div className="space-y-3 bg-[#0a0c0e] p-4 rounded-xl border border-[#22272f]">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-white">1. Direção & Olhar</span>
-                  <span className="text-[10px] text-[#c99e64] font-medium">Perfil do Fotógrafo</span>
+                  <span className="text-xs font-semibold text-white">1. Nossa Fachada</span>
+                  <span className="text-[10px] text-[#c99e64] font-medium">Estúdio Próprio</span>
                 </div>
-                <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-[#262b35] bg-black">
+                <div className="w-full aspect-[4/3] rounded-lg overflow-hidden border border-[#262b35] bg-black">
+                  <img
+                    src={instPhotos.fachada}
+                    alt="Nossa Fachada"
+                    className="w-full h-full object-cover object-top"
+                  />
+                </div>
+                <label className="w-full py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs rounded-lg cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-md">
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>
+                    {instUploadingSlot === 'fachada' ? 'Aplicando...' : 'Selecionar Foto da Fachada'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={Boolean(instUploadingSlot)}
+                    onChange={(e) => handleUploadInstPhoto(e, 'fachada')}
+                  />
+                </label>
+              </div>
+
+              {/* Foto 2: Direção & Olhar */}
+              <div className="space-y-3 bg-[#0a0c0e] p-4 rounded-xl border border-[#22272f]">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white">2. Direção & Olhar</span>
+                  <span className="text-[10px] text-[#c99e64] font-medium">Fotógrafo Profissional</span>
+                </div>
+                <div className="w-full aspect-[4/3] rounded-lg overflow-hidden border border-[#262b35] bg-black">
                   <img
                     src={instPhotos.perfil}
                     alt="Direção & Olhar"
@@ -2284,7 +2312,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <label className="w-full py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs rounded-lg cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-md">
                   <Camera className="w-3.5 h-3.5" />
                   <span>
-                    {instUploadingSlot === 'perfil' ? 'Aplicando...' : 'Selecionar Foto 1 (Perfil)'}
+                    {instUploadingSlot === 'perfil' ? 'Aplicando...' : 'Selecionar Foto do Fotógrafo'}
                   </span>
                   <input
                     type="file"
@@ -2292,34 +2320,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     className="hidden"
                     disabled={Boolean(instUploadingSlot)}
                     onChange={(e) => handleUploadInstPhoto(e, 'perfil')}
-                  />
-                </label>
-              </div>
-
-              {/* Foto 2: Produção em Ação */}
-              <div className="space-y-3 bg-[#0a0c0e] p-4 rounded-xl border border-[#22272f]">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-white">2. Produção em Ação</span>
-                  <span className="text-[10px] text-[#c99e64] font-medium">Em Cobertura</span>
-                </div>
-                <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-[#262b35] bg-black">
-                  <img
-                    src={instPhotos.cerimonia}
-                    alt="Produção em Ação"
-                    className="w-full h-full object-cover object-center"
-                  />
-                </div>
-                <label className="w-full py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs rounded-lg cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-md">
-                  <Camera className="w-3.5 h-3.5" />
-                  <span>
-                    {instUploadingSlot === 'cerimonia' ? 'Aplicando...' : 'Selecionar Foto 2 (Cobertura)'}
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    disabled={Boolean(instUploadingSlot)}
-                    onChange={(e) => handleUploadInstPhoto(e, 'cerimonia')}
                   />
                 </label>
               </div>
