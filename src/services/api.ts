@@ -2274,4 +2274,37 @@ export const api = {
     });
     return parseJsonResponse(res, 'Erro ao migrar dados para o Supabase');
   },
+
+  async getInstitutionalPhotos(): Promise<{
+    perfil: string;
+    cerimonia: string;
+    fachada: string;
+  }> {
+    try {
+      const res = await fetch(`${API_BASE}/institutional/photos`);
+      if (!res.ok) throw new Error('Falha ao obter fotos institucionais');
+      return await res.json();
+    } catch {
+      return {
+        perfil: '/fotografo_rocha_perfil.jpg',
+        cerimonia: '/fotografo_rocha_cerimonia.jpg',
+        fachada: '/rocha_fachada.jpg',
+      };
+    }
+  },
+
+  async uploadInstitutionalPhoto(
+    slot: 'perfil' | 'cerimonia' | 'fachada',
+    file: File
+  ): Promise<{ success: boolean; url: string; message: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('slot', slot);
+
+    const res = await fetch(`${API_BASE}/admin/institutional/photo`, {
+      method: 'POST',
+      body: formData,
+    });
+    return parseJsonResponse(res, 'Erro ao salvar fotografia original.');
+  },
 };

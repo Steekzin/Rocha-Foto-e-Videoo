@@ -110,6 +110,11 @@ interface DatabaseSchema {
   portfolioCategories: PortfolioCategory[];
   portfolioPhotos: PortfolioPhoto[];
   portfolio: PortfolioItem[];
+  institutionalPhotos?: {
+    perfil?: string;
+    cerimonia?: string;
+    fachada?: string;
+  };
 }
 
 // In-memory Database with file persistence
@@ -3015,6 +3020,88 @@ async function setupRoutes() {
       console.error('[Reset Demo Error]:', err);
       res.status(500).json({ error: err.message || 'Erro ao resetar dados de demonstração' });
     }
+  });
+
+  // ==============================================================================
+  // INSTITUTIONAL PHOTOS (A EMPRESA / SOBRE NÓS)
+  // Preserves 100% original unaltered photo without ANY AI modifications
+  // ==============================================================================
+  app.post(
+    ['/api/admin/institutional/photo', '/api/institutional/photo'],
+    upload.single('file') as any,
+    async (req: Request, res: Response) => {
+      try {
+        const file = req.file;
+        if (!file) {
+          return res.status(400).json({ error: 'Nenhum arquivo de imagem foi enviado.' });
+        }
+
+        const slot = (req.body.slot || 'perfil').trim(); // 'perfil' | 'cerimonia' | 'fachada'
+        const targetFilename =
+          slot === 'perfil'
+            ? 'fotografo_rocha_perfil.jpg'
+            : slot === 'cerimonia'
+            ? 'fotografo_rocha_cerimonia.jpg'
+            : 'rocha_fachada.jpg';
+
+        // 1. Direct write to public & dist folder for instant static serving
+        const publicPath = path.join(process.cwd(), 'public', targetFilename);
+        const distPath = path.join(process.cwd(), 'dist', targetFilename);
+        try {
+          fs.writeFileSync(publicPath, file.buffer);
+          if (fs.existsSync(path.dirname(distPath))) {
+            fs.writeFileSync(distPath, file.buffer);
+          }
+        } catch (fsErr) {
+          console.warn('Writing to local public directory warning:', fsErr);
+        }
+
+        // 2. Also save to Supabase Storage if available
+        let cloudUrl = `/${targetFilename}?t=${Date.now()}`;
+        if (isSupabaseConfigured()) {
+          try {
+            const storagePath = `institutional/${targetFilename}`;
+            const uploadedUrl = await uploadToSupabaseStorage(
+              'portfolio',
+              storagePath,
+              file.buffer,
+              file.mimetype || 'image/jpeg'
+            );
+            if (uploadedUrl) {
+              cloudUrl = `${uploadedUrl}?t=${Date.now()}`;
+            }
+          } catch (sbErr: any) {
+            console.warn('[Supabase Institutional Upload Warning]:', sbErr?.message);
+          }
+        }
+
+        // 3. Save into db.institutionalPhotos
+        if (!db.institutionalPhotos) {
+          db.institutionalPhotos = {};
+        }
+        (db.institutionalPhotos as any)[slot] = cloudUrl;
+        saveDatabase();
+
+        res.json({
+          success: true,
+          slot,
+          url: cloudUrl,
+          message: 'Fotografia original aplicada com 100% de fidelidade (sem modificações).',
+        });
+      } catch (err: any) {
+        console.error('[Institutional Upload Error]:', err);
+        res.status(500).json({ error: err.message || 'Erro ao salvar fotografia institucional' });
+      }
+    }
+  );
+
+  app.get('/api/institutional/photos', (req: Request, res: Response) => {
+    const photos = db.institutionalPhotos || {};
+    res.json({
+      perfil: photos.perfil || '/fotografo_rocha_perfil.jpg',
+      cerimonia: photos.cerimonia || '/fotografo_rocha_cerimonia.jpg',
+      fachada: photos.fachada || '/rocha_fachada.jpg',
+    });
   });
 
   // Explicit API 404 handler - prevents ANY /api route from falling through to HTML index.html
