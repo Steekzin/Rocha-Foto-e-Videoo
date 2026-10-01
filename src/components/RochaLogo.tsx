@@ -21,7 +21,10 @@ export const RochaLogo: React.FC<RochaLogoProps> = ({
 
   // State for direct raster PNG image (100% exact file upload)
   const [customLogoUrl, setCustomLogoUrl] = useState<string | null>(() => {
-    return localStorage.getItem('rocha_custom_logo') || null;
+    return (
+      localStorage.getItem('rocha_custom_logo') ||
+      '/rocha_logo_new.png'
+    );
   });
 
   useEffect(() => {
@@ -36,49 +39,12 @@ export const RochaLogo: React.FC<RochaLogoProps> = ({
       .catch(() => {});
   }, []);
 
-  const handleUploadLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Instant local preview with zero delay
-    const previewUrl = URL.createObjectURL(file);
-    setCustomLogoUrl(previewUrl);
-
-    // Save as base64 in localStorage for immediate offline persistence
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const b64 = reader.result as string;
-        if (b64 && b64.length < 5 * 1024 * 1024) {
-          localStorage.setItem('rocha_custom_logo', b64);
-        }
-      } catch {}
-    };
-    reader.readAsDataURL(file);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch('/api/admin/logo/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (data && data.url) {
-        setCustomLogoUrl(data.url);
-        localStorage.setItem('rocha_custom_logo', data.url);
-      }
-    } catch (err) {
-      console.warn('Logo upload warning:', err);
-    }
-  };
-
-  return (
-    <div
-      className={`relative group inline-flex items-center select-none ${heights[size]} ${className}`}
-      title="Rocha Foto & Vídeo"
-    >
-      {customLogoUrl ? (
+  if (customLogoUrl) {
+    return (
+      <div
+        className={`inline-flex items-center select-none ${heights[size]} ${className}`}
+        title="Rocha Foto & Vídeo"
+      >
         <img
           src={customLogoUrl}
           alt="Rocha Foto & Vídeo"
@@ -86,14 +52,21 @@ export const RochaLogo: React.FC<RochaLogoProps> = ({
           className="h-full w-auto max-w-full object-contain filter drop-shadow-sm"
           onError={() => setCustomLogoUrl(null)}
         />
-      ) : (
-        /* Official 3D Luxury Chrome & Sapphire Vector Logo (Transparent Background) */
-        <svg
-          viewBox="0 0 540 180"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-full w-auto max-w-full"
-        >
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`inline-flex items-center select-none ${heights[size]} ${className}`}
+      title="Rocha Foto & Vídeo"
+    >
+      <svg
+        viewBox="0 0 540 180"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        className="h-full w-auto max-w-full"
+      >
           <defs>
             {/* 3D Chrome / Platinum Metallic Gradient */}
             <linearGradient id="chrome3D" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -304,22 +277,6 @@ export const RochaLogo: React.FC<RochaLogoProps> = ({
             </text>
           </g>
         </svg>
-      )}
-
-      {/* Discrete Logo Update Button for 1-click application of transparent PNG */}
-      <label
-        title="Carregar arquivo oficial da logo em PNG (100% original)"
-        onClick={(e) => e.stopPropagation()}
-        className="opacity-0 group-hover:opacity-100 transition-opacity absolute -bottom-2 right-0 bg-black/85 hover:bg-black text-[9px] text-amber-300 hover:text-amber-200 border border-amber-500/40 rounded px-1.5 py-0.5 cursor-pointer flex items-center gap-1 shadow-md z-20"
-      >
-        <span>Atualizar PNG</span>
-        <input
-          type="file"
-          accept="image/png,image/*"
-          className="hidden"
-          onChange={handleUploadLogo}
-        />
-      </label>
-    </div>
-  );
+      </div>
+    );
 };

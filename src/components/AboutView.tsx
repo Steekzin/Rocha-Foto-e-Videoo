@@ -47,38 +47,6 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
       .catch(() => {});
   }, []);
 
-  const handleUploadOriginal = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-    slot: 'perfil' | 'cerimonia' | 'fachada'
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const previewUrl = URL.createObjectURL(file);
-    setPhotos((prev) => ({ ...prev, [slot]: previewUrl }));
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const b64 = reader.result as string;
-        if (b64 && b64.length < 5 * 1024 * 1024) {
-          localStorage.setItem(`rocha_inst_${slot}`, b64);
-        }
-      } catch {}
-    };
-    reader.readAsDataURL(file);
-
-    try {
-      const res = await api.uploadInstitutionalPhoto(slot, file);
-      if (res && res.url) {
-        setPhotos((prev) => ({ ...prev, [slot]: res.url }));
-        localStorage.setItem(`rocha_inst_${slot}`, res.url);
-      }
-    } catch (err: any) {
-      console.warn('Erro ao sincronizar com o servidor:', err);
-    }
-  };
-
   const serviceCategories = [
     {
       title: 'Casamentos',
@@ -231,21 +199,6 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                 </span>
                 <h3 className="text-white font-serif-luxury text-xl font-normal">Nossa Fachada</h3>
               </div>
-
-              {/* Botão sutil visível apenas ao passar o mouse para o proprietário atualizar */}
-              <label
-                title="Carregar imagem da Fachada (100% original)"
-                className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-3 right-3 bg-black/85 hover:bg-black text-[10px] text-amber-300 border border-amber-500/40 rounded-lg px-2.5 py-1 cursor-pointer flex items-center gap-1.5 shadow-md z-20"
-              >
-                <Camera className="w-3 h-3" />
-                <span>Trocar Fachada</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleUploadOriginal(e, 'fachada')}
-                />
-              </label>
             </div>
 
             {/* 2. Fotógrafo Profissional */}
@@ -271,21 +224,6 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                 </span>
                 <h3 className="text-white font-serif-luxury text-xl font-normal">Direção & Olhar</h3>
               </div>
-
-              {/* Botão sutil visível apenas ao passar o mouse para o proprietário atualizar */}
-              <label
-                title="Carregar foto do fotógrafo (100% original)"
-                className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-3 right-3 bg-black/85 hover:bg-black text-[10px] text-amber-300 border border-amber-500/40 rounded-lg px-2.5 py-1 cursor-pointer flex items-center gap-1.5 shadow-md z-20"
-              >
-                <Camera className="w-3 h-3" />
-                <span>Trocar Foto</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleUploadOriginal(e, 'perfil')}
-                />
-              </label>
             </div>
           </div>
         </div>
