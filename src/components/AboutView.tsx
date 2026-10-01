@@ -216,15 +216,15 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                   : 'bg-[#121418] border-[#22272f] hover:border-[#c99e64]/60'
               }`}
             >
-              <div className="w-full h-80 sm:h-96 md:h-[400px] overflow-hidden bg-black/40">
+              <div className="w-full h-[480px] sm:h-[560px] md:h-[600px] overflow-hidden bg-black/40">
                 <img
                   src={photos.fachada}
                   alt="Studio Rocha Foto & Vídeo - Fachada"
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover object-top transition-transform duration-500 group-hover:scale-105"
+                  className="w-full h-full object-cover object-center transition-transform duration-500 group-hover:scale-105"
                 />
               </div>
-              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
+              <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none" />
               <div className="absolute bottom-5 left-5 right-5">
                 <span className="text-[#c99e64] text-[11px] font-semibold uppercase tracking-wider block mb-1">
                   Estúdio Próprio
@@ -256,15 +256,15 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
                   : 'bg-[#121418] border-[#22272f] hover:border-[#c99e64]/60'
               }`}
             >
-              <div className="w-full h-80 sm:h-96 md:h-[400px] overflow-hidden bg-black/40">
+              <div className="w-full h-[480px] sm:h-[560px] md:h-[600px] overflow-hidden bg-black/40">
                 <img
                   src={photos.perfil}
                   alt="Fotógrafo Rocha - Rocha Foto & Vídeo"
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover object-top transition-transform duration-500 group-hover:scale-105"
+                  className="w-full h-full object-cover object-[center_15%] transition-transform duration-500 group-hover:scale-105"
                 />
               </div>
-              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none" />
+              <div className="absolute bottom-0 left-0 right-0 h-28 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none" />
               <div className="absolute bottom-5 left-5 right-5">
                 <span className="text-[#c99e64] text-[11px] font-semibold uppercase tracking-wider block mb-1">
                   Fotógrafo Profissional
