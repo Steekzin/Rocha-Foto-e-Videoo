@@ -128,6 +128,62 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [inspectedSelection, setInspectedSelection] = useState<SelectionRecord | null>(null);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
 
+  // Institutional Photos Modal (A Empresa)
+  const [showInstitutionalModal, setShowInstitutionalModal] = useState(false);
+  const [instPhotos, setInstPhotos] = useState<{ perfil: string; cerimonia: string; fachada: string }>({
+    perfil: '/fotografo_rocha_perfil.jpg',
+    cerimonia: '/fotografo_rocha_cerimonia.jpg',
+    fachada: '/rocha_fachada.jpg',
+  });
+  const [instUploadingSlot, setInstUploadingSlot] = useState<string | null>(null);
+  const [instToast, setInstToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getInstitutionalPhotos()
+      .then((res) => {
+        if (res) setInstPhotos(res);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleUploadInstPhoto = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    slot: 'perfil' | 'cerimonia' | 'fachada'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setInstUploadingSlot(slot);
+    const localPreview = URL.createObjectURL(file);
+    setInstPhotos((prev) => ({ ...prev, [slot]: localPreview }));
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const b64 = reader.result as string;
+        if (b64 && b64.length < 5 * 1024 * 1024) {
+          localStorage.setItem(`rocha_inst_${slot}`, b64);
+        }
+      } catch {}
+    };
+    reader.readAsDataURL(file);
+
+    try {
+      const res = await api.uploadInstitutionalPhoto(slot, file);
+      if (res && res.url) {
+        setInstPhotos((prev) => ({ ...prev, [slot]: res.url }));
+        localStorage.setItem(`rocha_inst_${slot}`, res.url);
+        setInstToast('Foto atualizada com sucesso no site!');
+      }
+    } catch (err: any) {
+      setInstToast('Foto atualizada localmente com sucesso!');
+    } finally {
+      setInstUploadingSlot(null);
+      setTimeout(() => setInstToast(null), 4000);
+    }
+  };
+
   // Fetch all admin data
   useEffect(() => {
     if (currentUser?.role === 'admin') {
@@ -571,6 +627,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             >
               <Plus className="w-3.5 h-3.5 text-[#c99e64]" />
               <span>Nova Galeria</span>
+            </button>
+            <button
+              onClick={() => setShowInstitutionalModal(true)}
+              className="px-3 py-1.5 bg-[#1a1e26] hover:bg-[#232933] border border-[#2b313d] text-xs text-white rounded-lg transition-colors flex items-center gap-1.5"
+              title="Gerenciar fotos institucionais da aba A Empresa"
+            >
+              <Camera className="w-3.5 h-3.5 text-[#c99e64]" />
+              <span>Fotos da Empresa</span>
             </button>
           </div>
         </div>
@@ -2173,6 +2237,102 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 Criar Galeria
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Institutional Photos Modal (A Empresa) */}
+      {showInstitutionalModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#12151a] border border-[#2a303c] rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-6">
+            <div className="flex items-center justify-between border-b border-[#20252e] pb-4">
+              <div>
+                <h3 className="font-serif-luxury text-xl text-white">Fotos da Seção "A Empresa"</h3>
+                <p className="text-xs text-[#9ca3af]">
+                  Defina as fotos oficiais originais. Na página pública, elas aparecem limpas e proporcionais sem botões visíveis.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowInstitutionalModal(false)}
+                className="text-[#9ca3af] hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {instToast && (
+              <div className="bg-emerald-900/30 border border-emerald-500/50 text-emerald-300 p-3 rounded-xl text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{instToast}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              {/* Foto 1: Direção & Olhar */}
+              <div className="space-y-3 bg-[#0a0c0e] p-4 rounded-xl border border-[#22272f]">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white">1. Direção & Olhar</span>
+                  <span className="text-[10px] text-[#c99e64] font-medium">Perfil do Fotógrafo</span>
+                </div>
+                <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-[#262b35] bg-black">
+                  <img
+                    src={instPhotos.perfil}
+                    alt="Direção & Olhar"
+                    className="w-full h-full object-cover object-top"
+                  />
+                </div>
+                <label className="w-full py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs rounded-lg cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-md">
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>
+                    {instUploadingSlot === 'perfil' ? 'Aplicando...' : 'Selecionar Foto 1 (Perfil)'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={Boolean(instUploadingSlot)}
+                    onChange={(e) => handleUploadInstPhoto(e, 'perfil')}
+                  />
+                </label>
+              </div>
+
+              {/* Foto 2: Produção em Ação */}
+              <div className="space-y-3 bg-[#0a0c0e] p-4 rounded-xl border border-[#22272f]">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white">2. Produção em Ação</span>
+                  <span className="text-[10px] text-[#c99e64] font-medium">Em Cobertura</span>
+                </div>
+                <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-[#262b35] bg-black">
+                  <img
+                    src={instPhotos.cerimonia}
+                    alt="Produção em Ação"
+                    className="w-full h-full object-cover object-center"
+                  />
+                </div>
+                <label className="w-full py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs rounded-lg cursor-pointer flex items-center justify-center gap-1.5 transition-all shadow-md">
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>
+                    {instUploadingSlot === 'cerimonia' ? 'Aplicando...' : 'Selecionar Foto 2 (Cobertura)'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={Boolean(instUploadingSlot)}
+                    onChange={(e) => handleUploadInstPhoto(e, 'cerimonia')}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setShowInstitutionalModal(false)}
+                className="px-5 py-2.5 bg-[#1a1e26] hover:bg-[#232933] text-xs text-white rounded-lg border border-[#2b313d] transition-colors"
+              >
+                Concluir
+              </button>
+            </div>
           </div>
         </div>
       )}

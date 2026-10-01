@@ -3104,6 +3104,63 @@ async function setupRoutes() {
     });
   });
 
+  // ==============================================================================
+  // BRAND LOGO UPLOAD & RETRIEVAL (Official 3D Metallic Logo)
+  // ==============================================================================
+  app.post(
+    ['/api/admin/logo/upload', '/api/logo/upload'],
+    upload.single('file') as any,
+    async (req: Request, res: Response) => {
+      try {
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: 'Nenhum arquivo de logo enviado.' });
+
+        const publicPath = path.join(process.cwd(), 'public', 'rocha_logo_new.png');
+        const distPath = path.join(process.cwd(), 'dist', 'rocha_logo_new.png');
+        try {
+          fs.writeFileSync(publicPath, file.buffer);
+          if (fs.existsSync(path.dirname(distPath))) {
+            fs.writeFileSync(distPath, file.buffer);
+          }
+        } catch (fsErr) {
+          console.warn('Writing logo to public directory warning:', fsErr);
+        }
+
+        let cloudUrl = `/rocha_logo_new.png?t=${Date.now()}`;
+        if (isSupabaseConfigured()) {
+          try {
+            const uploadedUrl = await uploadToSupabaseStorage(
+              'portfolio',
+              'branding/rocha_logo_new.png',
+              file.buffer,
+              file.mimetype || 'image/png'
+            );
+            if (uploadedUrl) cloudUrl = `${uploadedUrl}?t=${Date.now()}`;
+          } catch (sbErr: any) {
+            console.warn('[Supabase Logo Warning]:', sbErr?.message);
+          }
+        }
+
+        if (!db.institutionalPhotos) db.institutionalPhotos = {};
+        (db.institutionalPhotos as any).logo = cloudUrl;
+        saveDatabase();
+
+        res.json({ success: true, url: cloudUrl, message: 'Nova logo aplicada com sucesso!' });
+      } catch (err: any) {
+        console.error('[Logo Upload Error]:', err);
+        res.status(500).json({ error: err.message || 'Erro ao salvar logo' });
+      }
+    }
+  );
+
+  app.get('/api/logo', (req: Request, res: Response) => {
+    const custom = (db.institutionalPhotos as any)?.logo;
+    const exists = fs.existsSync(path.join(process.cwd(), 'public', 'rocha_logo_new.png'));
+    res.json({
+      url: custom || (exists ? '/rocha_logo_new.png' : null),
+    });
+  });
+
   // Explicit API 404 handler - prevents ANY /api route from falling through to HTML index.html
   app.all('/api/*', (req: Request, res: Response) => {
     res.status(404).json({

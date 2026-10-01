@@ -2307,4 +2307,25 @@ export const api = {
     });
     return parseJsonResponse(res, 'Erro ao salvar fotografia original.');
   },
+
+  async getLogo(): Promise<{ url: string | null }> {
+    try {
+      const res = await fetch(`${API_BASE}/logo`);
+      if (!res.ok) return { url: null };
+      return await res.json();
+    } catch {
+      return { url: null };
+    }
+  },
+
+  async uploadLogo(file: File): Promise<{ success: boolean; url: string; message: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch(`${API_BASE}/admin/logo/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+    return parseJsonResponse(res, 'Erro ao salvar nova logo.');
+  },
 };
