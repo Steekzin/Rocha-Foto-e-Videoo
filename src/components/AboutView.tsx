@@ -186,7 +186,7 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
             >
               <div className="w-full h-[480px] sm:h-[560px] md:h-[600px] overflow-hidden bg-black/40">
                 <img
-                  src={photos.fachada}
+                  src="/rocha_fachada_oficial.png"
                   alt="Studio Rocha Foto & Vídeo - Fachada"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover object-center transition-transform duration-500 group-hover:scale-105"
@@ -211,10 +211,10 @@ export const AboutView: React.FC<AboutViewProps> = ({ setActiveTab }) => {
             >
               <div className="w-full h-[480px] sm:h-[560px] md:h-[600px] overflow-hidden bg-black/40">
                 <img
-                  src={photos.perfil}
+                  src="/fotografo_rocha_perfil_oficial.png"
                   alt="Fotógrafo Rocha - Rocha Foto & Vídeo"
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover object-[center_15%] transition-transform duration-500 group-hover:scale-105"
+                  className="w-full h-full object-cover object-[50%_28%] transition-transform duration-500 group-hover:scale-105"
                 />
               </div>
               <div className="absolute bottom-0 left-0 right-0 h-28 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none" />
