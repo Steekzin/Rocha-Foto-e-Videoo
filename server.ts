@@ -114,6 +114,8 @@ interface DatabaseSchema {
     perfil?: string;
     cerimonia?: string;
     fachada?: string;
+    wedding_ceremony?: string;
+    logo?: string;
   };
 }
 

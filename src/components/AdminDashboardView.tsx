@@ -130,10 +130,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   // Institutional Photos Modal (A Empresa)
   const [showInstitutionalModal, setShowInstitutionalModal] = useState(false);
-  const [instPhotos, setInstPhotos] = useState<{ perfil: string; cerimonia: string; fachada: string }>({
-    perfil: '/fotografo_rocha_perfil.jpg',
+  const [instPhotos, setInstPhotos] = useState<{
+    perfil: string;
+    cerimonia: string;
+    fachada: string;
+  }>({
+    perfil: '/fotografo_rocha_perfil_oficial.png',
     cerimonia: '/fotografo_rocha_cerimonia.jpg',
-    fachada: '/rocha_fachada.jpg',
+    fachada: '/rocha_fachada_oficial.png',
   });
   const [instUploadingSlot, setInstUploadingSlot] = useState<string | null>(null);
   const [instToast, setInstToast] = useState<string | null>(null);
@@ -142,7 +146,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     api
       .getInstitutionalPhotos()
       .then((res) => {
-        if (res) setInstPhotos(res);
+        if (res) setInstPhotos((prev) => ({ ...prev, ...res }));
       })
       .catch(() => {});
   }, []);
@@ -170,7 +174,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     reader.readAsDataURL(file);
 
     try {
-      const res = await api.uploadInstitutionalPhoto(slot, file);
+      const res = await api.uploadInstitutionalPhoto(slot as any, file);
       if (res && res.url) {
         setInstPhotos((prev) => ({ ...prev, [slot]: res.url }));
         localStorage.setItem(`rocha_inst_${slot}`, res.url);
