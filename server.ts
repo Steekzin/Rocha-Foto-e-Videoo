@@ -919,7 +919,7 @@ async function setupRoutes() {
     ].join('\n');
 
     const encodedMessage = encodeURIComponent(whatsappMessage);
-    const studioWhatsApp = '553891065054'; // Rocha Foto & Vídeo oficial WhatsApp (+55 38 9106-5054)
+    const studioWhatsApp = '5538991065054'; // Rocha Foto & Vídeo oficial WhatsApp (+55 38 99106-5054)
     const whatsappUrl = `https://wa.me/${studioWhatsApp}?text=${encodedMessage}`;
 
     res.status(201).json({

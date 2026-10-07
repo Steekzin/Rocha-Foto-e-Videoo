@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mail, MapPin, Phone, Instagram, Facebook, ShieldCheck } from 'lucide-react';
+import { Mail, MapPin, Phone, MessageCircle, Instagram, Facebook, ShieldCheck } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.js';
 import { RochaLogo } from './RochaLogo.js';
 
@@ -140,7 +140,18 @@ export const Footer: React.FC<FooterProps> = ({ setActiveTab }) => {
               </div>
               <div className="flex items-center gap-2.5">
                 <Phone className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />
-                <span>(38) 3321-1534</span>
+                <span>(38) 3321-1534 (Telefone Fixo)</span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <MessageCircle className="w-4 h-4 text-[#22c55e] shrink-0" />
+                <a
+                  href="https://wa.me/5538991065054"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:underline text-gray-700 dark:text-gray-300 hover:text-[#22c55e]"
+                >
+                  (38) 99106-5054 (WhatsApp)
+                </a>
               </div>
               <div className="flex items-center gap-2.5">
                 <Mail className="w-4 h-4 text-[#2b5bb0] dark:text-[#c99e64] shrink-0" />

@@ -35,7 +35,7 @@ export const ContactView: React.FC = () => {
       form.date || 'A definir'
     )}%0A- Mensagem: ${encodeURIComponent(form.message)}`;
 
-    const whatsappUrl = `https://wa.me/553833211534?text=${formattedMsg}`;
+    const whatsappUrl = `https://wa.me/5538991065054?text=${formattedMsg}`;
     window.open(whatsappUrl, '_blank');
     setSubmitted(false);
     alert('Mensagem preparada! Redirecionando para o WhatsApp oficial da Rocha Foto & Vídeo.');
@@ -113,14 +113,22 @@ export const ContactView: React.FC = () => {
                       isLight ? 'text-gray-500' : 'text-[#828a95]'
                     }`}
                   >
-                    WhatsApp & Telefones
+                    Telefones & Atendimento
                   </span>
                   <div
-                    className={`font-semibold space-y-0.5 ${
+                    className={`font-semibold space-y-1 ${
                       isLight ? 'text-gray-900' : 'text-white'
                     }`}
                   >
-                    <p>+55 (38) 3321-1534 (WhatsApp & Studio)</p>
+                    <p>(38) 3321-1534 (Telefone Fixo)</p>
+                    <a
+                      href="https://wa.me/5538991065054"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-[#22c55e] hover:underline"
+                    >
+                      (38) 99106-5054 (WhatsApp)
+                    </a>
                   </div>
                 </div>
               </div>
@@ -236,7 +244,7 @@ export const ContactView: React.FC = () => {
               }`}
             >
               <a
-                href="https://wa.me/553833211534?text=Olá,%20gostaria%20de%20conversar%20sobre%20a%20cobertura%20do%20meu%20evento%20na%20Rocha%20Foto%20e%20Vídeo"
+                href="https://wa.me/5538991065054?text=Olá,%20gostaria%20de%20conversar%20sobre%20a%20cobertura%20do%20meu%20evento%20na%20Rocha%20Foto%20e%20Vídeo"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full py-3 bg-[#22c55e] hover:bg-[#16a34a] text-black font-bold text-xs uppercase tracking-wider rounded-xl transition-colors flex items-center justify-center gap-2 shadow-md"

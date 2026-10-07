@@ -499,7 +499,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
               {/* Action Buttons in Lightbox */}
               <div className="mt-3 flex items-center justify-center gap-3">
                 <a
-                  href={`https://wa.me/5538999999999?text=${encodeURIComponent(
+                  href={`https://wa.me/5538991065054?text=${encodeURIComponent(
                     `Olá, Rocha Foto & Vídeo! Adorei a foto "${formatDisplayTitle(currentLightboxItem.title, currentLightboxItem.category, currentLightboxItem.number)}" da categoria ${currentLightboxItem.category} (Ref: #${currentLightboxItem.number || '001'}). Gostaria de solicitar um orçamento para meu evento!`
                   )}`}
                   target="_blank"
