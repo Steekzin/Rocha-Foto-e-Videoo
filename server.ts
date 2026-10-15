@@ -795,6 +795,127 @@ async function setupRoutes() {
     }
   });
 
+  // Multipart/FormData Upload for Client Gallery Photos (Matching Public Portfolio standard)
+  app.post(
+    ['/api/admin/galleries/:id/photos/upload', '/api/galleries/:id/photos/upload'],
+    upload.array('files', 100) as any,
+    async (req: Request, res: Response) => {
+      try {
+        const { id: galleryId } = req.params;
+        const files = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) {
+          return res.status(400).json({ error: 'Nenhuma fotografia enviada.' });
+        }
+
+        let gallery = db.galleries.find((g) => g.id === galleryId);
+        if (!gallery) {
+          if (db.galleries.length === 0) {
+            db.galleries = [...INITIAL_GALLERIES];
+            gallery = db.galleries.find((g) => g.id === galleryId) || db.galleries[0];
+          }
+        }
+        if (!gallery) {
+          gallery = {
+            id: galleryId,
+            eventId: 'evt-1',
+            eventName: 'Galeria Geral',
+            clientId: 'cli-1',
+            clientName: 'Cliente',
+            title: 'Galeria de Fotos',
+            slug: `galeria-${galleryId}`,
+            status: 'ativa',
+            pricingType: 'none',
+            defaultPrice: 0,
+            photoCount: 0,
+            createdAt: new Date().toISOString(),
+          };
+          db.galleries.push(gallery);
+        }
+
+        const existingPhotos = db.photos
+          .filter((p) => p.galleryId === gallery.id)
+          .sort((a, b) => a.order - b.order);
+
+        let nextOrder = existingPhotos.length > 0 ? Math.max(...existingPhotos.map((p) => p.order)) + 1 : 1;
+        const addedPhotos: Photo[] = [];
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const photoOrder = nextOrder++;
+          const numFormatted = String(photoOrder).padStart(3, '0');
+          const cleanName = (file.originalname || `foto_${photoOrder}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+          let photoUrl = '';
+
+          // 1. Try Supabase Storage first if configured
+          if (isSupabaseConfigured()) {
+            try {
+              const storagePath = `galleries/${gallery.id}/${Date.now()}_${i}_${cleanName}`;
+              const uploadedUrl = await uploadToSupabaseStorage(
+                'portfolio',
+                storagePath,
+                file.buffer,
+                file.mimetype || 'image/jpeg'
+              );
+              if (uploadedUrl) {
+                photoUrl = uploadedUrl;
+              }
+            } catch (sbErr) {
+              console.warn('[Supabase Gallery Storage Warning]:', sbErr);
+            }
+          }
+
+          // 2. Local disk fallback
+          if (!photoUrl) {
+            try {
+              const galleryDir = isServerless ? path.join('/tmp', 'galleries', gallery.id) : path.join(process.cwd(), 'public', 'galleries', gallery.id);
+              if (!fs.existsSync(galleryDir)) {
+                fs.mkdirSync(galleryDir, { recursive: true });
+              }
+              const localFileName = `${Date.now()}_${i}_${cleanName}`;
+              const targetFilePath = path.join(galleryDir, localFileName);
+              fs.writeFileSync(targetFilePath, file.buffer);
+              photoUrl = `/galleries/${gallery.id}/${localFileName}`;
+            } catch (diskErr) {
+              // Base64 as ultimate fallback
+              photoUrl = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
+            }
+          }
+
+          const newPhoto: Photo = {
+            id: `p-${Date.now()}-${i}-${Math.floor(Math.random() * 10000)}`,
+            galleryId: gallery.id,
+            number: numFormatted,
+            imageUrl: photoUrl,
+            description: (file.originalname || '').replace(/\.[^/.]+$/, ''),
+            price: gallery.defaultPrice || 0,
+            order: photoOrder,
+            createdAt: new Date().toISOString(),
+          };
+
+          db.photos.push(newPhoto);
+          addedPhotos.push(newPhoto);
+        }
+
+        if (!gallery.coverImage && addedPhotos[0]?.imageUrl) {
+          gallery.coverImage = addedPhotos[0].imageUrl;
+        }
+        gallery.photoCount = db.photos.filter((p) => p.galleryId === gallery.id).length;
+
+        try {
+          saveDatabase();
+        } catch (saveErr) {
+          console.warn('Failed to save database to disk:', saveErr);
+        }
+
+        res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos });
+      } catch (err: any) {
+        console.error('[Gallery Multipart Upload Error]:', err);
+        res.status(500).json({ error: 'Erro ao fazer upload das fotos: ' + (err.message || String(err)) });
+      }
+    }
+  );
+
   // Update single photo
   app.put('/api/galleries/:galleryId/photos/:photoId', (req: Request, res: Response) => {
     const { photoId } = req.params;

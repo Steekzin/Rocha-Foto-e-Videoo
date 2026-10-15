@@ -690,6 +690,133 @@ export const api = {
     return parseJsonResponse(res, 'Erro ao fazer upload das fotos');
   },
 
+  async uploadGalleryPhotoFiles(
+    galleryId: string,
+    files: File[],
+    onProgress?: (current: number, total: number, fileName?: string) => void
+  ): Promise<{ success: boolean; count: number; photos: Photo[] }> {
+    if (!files || files.length === 0) {
+      throw new Error('Nenhuma fotografia selecionada para envio.');
+    }
+
+    // 1. Optimize client-side to ensure smooth upload
+    const optimizedFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const opt = await optimizePhotoForWeb(files[i]);
+        optimizedFiles.push(opt);
+      } catch {
+        optimizedFiles.push(files[i]);
+      }
+    }
+
+    const allUploaded: Photo[] = [];
+    const BATCH_SIZE = 2; // Micro-batches of 2 photos for optimal Vercel 4.5MB stability
+
+    for (let start = 0; start < optimizedFiles.length; start += BATCH_SIZE) {
+      const fileBatch = optimizedFiles.slice(start, start + BATCH_SIZE);
+      const originalBatch = files.slice(start, start + BATCH_SIZE);
+      let batchSuccess = false;
+
+      if (onProgress) {
+        onProgress(start + 1, files.length, originalBatch[0]?.name);
+      }
+
+      // Try FormData multipart endpoint first
+      try {
+        const formData = new FormData();
+        for (const f of fileBatch) {
+          formData.append('files', f);
+        }
+
+        const res = await fetch(`${API_BASE}/galleries/${galleryId}/photos/upload`, {
+          method: 'POST',
+          headers: getAdminHeaders(),
+          body: formData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.photos) && data.photos.length > 0) {
+            allUploaded.push(...data.photos);
+            batchSuccess = true;
+          }
+        }
+      } catch (uploadErr) {
+        console.warn('[Server multipart gallery upload failed, attempting fallback]:', uploadErr);
+      }
+
+      // Fallback: If multipart failed, try direct Supabase Storage or base64 micro-batch
+      if (!batchSuccess) {
+        const photosPayload: Partial<Photo>[] = [];
+        for (let b = 0; b < fileBatch.length; b++) {
+          const f = fileBatch[b];
+          let photoUrl = '';
+
+          if (supabase) {
+            try {
+              const cleanFileName = f.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const storagePath = `galleries/${galleryId}/${Date.now()}_${b}_${cleanFileName}`;
+              const { error: sbErr } = await supabase.storage
+                .from('portfolio')
+                .upload(storagePath, f, {
+                  contentType: f.type || 'image/jpeg',
+                  upsert: true,
+                });
+
+              if (!sbErr) {
+                const { data: publicData } = supabase.storage
+                  .from('portfolio')
+                  .getPublicUrl(storagePath);
+                if (publicData?.publicUrl) {
+                  photoUrl = publicData.publicUrl;
+                }
+              }
+            } catch (sbErr) {
+              console.warn('[Supabase Direct Storage Fallback Error]:', sbErr);
+            }
+          }
+
+          if (!photoUrl) {
+            photoUrl = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (e) => resolve((e.target?.result as string) || '');
+              reader.readAsDataURL(f);
+            });
+          }
+
+          if (photoUrl) {
+            photosPayload.push({
+              imageUrl: photoUrl,
+              description: f.name.replace(/\.[^/.]+$/, ''),
+            });
+          }
+        }
+
+        if (photosPayload.length > 0) {
+          const fallbackRes = await fetch(`${API_BASE}/galleries/${galleryId}/photos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(photosPayload),
+          });
+          if (fallbackRes.ok) {
+            const data = await fallbackRes.json();
+            if (data && Array.isArray(data.photos)) {
+              allUploaded.push(...data.photos);
+              batchSuccess = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (onProgress) {
+      onProgress(files.length, files.length);
+    }
+
+    return { success: true, count: allUploaded.length, photos: allUploaded };
+  },
+
   async updatePhoto(galleryId: string, photoId: string, photo: Partial<Photo>): Promise<Photo> {
     const res = await fetch(`${API_BASE}/galleries/${galleryId}/photos/${photoId}`, {
       method: 'PUT',

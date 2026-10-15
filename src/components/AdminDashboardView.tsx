@@ -129,6 +129,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   // Photo Inspection / Edit Modal
   const [inspectedSelection, setInspectedSelection] = useState<SelectionRecord | null>(null);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
+  const [galleryUploadProgress, setGalleryUploadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [currentGalleryUploadingFileName, setCurrentGalleryUploadingFileName] = useState('');
 
   // Institutional Photos Modal (A Empresa)
   const [showInstitutionalModal, setShowInstitutionalModal] = useState(false);
@@ -394,90 +396,35 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       }
     }
 
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const filesArray = Array.from(fileList) as File[];
 
     setLoading(true);
-    const photosToUpload: Partial<Photo>[] = [];
+    setGalleryUploadProgress({ current: 0, total: filesArray.length });
 
     try {
-      // 1. Optimize each photo and upload to Supabase Storage if available
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        let photoUrl = '';
-
-        try {
-          const optimized = await optimizePhotoForWeb(file);
-          
-          // Try direct Supabase Storage upload for maximum performance and 0 payload limit
-          if (supabase) {
-            try {
-              const cleanFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const storagePath = `galleries/${targetGallery.id}/${Date.now()}_${i}_${cleanFileName}`;
-              const { error: sbErr } = await supabase.storage
-                .from('portfolio')
-                .upload(storagePath, optimized, {
-                  contentType: optimized.type || 'image/jpeg',
-                  upsert: true,
-                });
-
-              if (!sbErr) {
-                const { data: publicData } = supabase.storage
-                  .from('portfolio')
-                  .getPublicUrl(storagePath);
-                if (publicData?.publicUrl) {
-                  photoUrl = publicData.publicUrl;
-                }
-              }
-            } catch (sbUploadErr) {
-              console.warn('[Supabase Direct Gallery Upload Fallback]:', sbUploadErr);
-            }
-          }
-
-          // Fallback to lightweight optimized base64 if Supabase storage was not used
-          if (!photoUrl) {
-            photoUrl = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onload = (event) => resolve((event.target?.result as string) || '');
-              reader.readAsDataURL(optimized);
-            });
-          }
-        } catch (optErr) {
-          console.warn('[Optimization fallback for file]:', file.name, optErr);
-          photoUrl = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (event) => resolve((event.target?.result as string) || '');
-            reader.readAsDataURL(file);
-          });
+      const res = await api.uploadGalleryPhotoFiles(
+        targetGallery.id,
+        filesArray,
+        (current, total, fileName) => {
+          setGalleryUploadProgress({ current, total });
+          if (fileName) setCurrentGalleryUploadingFileName(fileName);
         }
+      );
 
-        if (photoUrl) {
-          photosToUpload.push({
-            imageUrl: photoUrl,
-            description: file.name.replace(/\.[^/.]+$/, ''),
-          });
-        }
+      if (res && res.photos) {
+        setCurrentGalleryPhotos((prev) => [...prev, ...res.photos]);
       }
-
-      // 2. Upload in micro-batches of 2 photos to prevent Vercel 4.5MB request limit
-      const BATCH_SIZE = 2;
-      const allNewPhotos: Photo[] = [];
-      for (let i = 0; i < photosToUpload.length; i += BATCH_SIZE) {
-        const batch = photosToUpload.slice(i, i + BATCH_SIZE);
-        const res = await api.uploadPhotos(targetGallery.id, batch);
-        if (res && res.photos) {
-          allNewPhotos.push(...res.photos);
-        }
-      }
-
-      setCurrentGalleryPhotos((prev) => [...prev, ...allNewPhotos]);
       await loadAllAdminData();
-      alert(`✨ ${allNewPhotos.length} fotografia(s) enviada(s) com sucesso com numeração sequencial gerada!`);
+      alert(`✨ Sucesso! ${res.count || filesArray.length} fotografia(s) adicionada(s) à galeria "${targetGallery.title}" com numeração sequencial automática.`);
     } catch (err: any) {
       console.error('[Upload Error Caught]:', err);
       alert(err.message || 'Erro ao enviar fotos.');
     } finally {
       setLoading(false);
+      setGalleryUploadProgress(null);
+      setCurrentGalleryUploadingFileName('');
       e.target.value = '';
     }
   };
@@ -1363,6 +1310,36 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Upload Progress Indicator */}
+            {galleryUploadProgress && (
+              <div className="bg-[#1b1f28] border border-[#c99e64]/40 rounded-xl p-4 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-[#c99e64] animate-spin" />
+                    <span className="text-xs font-semibold text-white">
+                      Enviando fotos para a galeria ({galleryUploadProgress.current} de {galleryUploadProgress.total})...
+                    </span>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-[#c99e64]">
+                    {Math.round((galleryUploadProgress.current / (galleryUploadProgress.total || 1)) * 100)}%
+                  </span>
+                </div>
+                {currentGalleryUploadingFileName && (
+                  <p className="text-[11px] text-[#828a95] truncate mb-2">
+                    Processando: {currentGalleryUploadingFileName}
+                  </p>
+                )}
+                <div className="w-full bg-[#0c0d0e] rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-[#c99e64] to-[#e6ca65] h-full transition-all duration-300 rounded-full"
+                    style={{
+                      width: `${Math.round((galleryUploadProgress.current / (galleryUploadProgress.total || 1)) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Photos Grid with Automatic Numbering Display (001, 002, 003...) */}
             <div>
