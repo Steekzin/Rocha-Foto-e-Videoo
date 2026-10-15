@@ -209,17 +209,50 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         api.getSelections().catch(() => []),
         api.getDashboardStats().catch(() => null),
       ]);
-      setClients(cList || []);
-      setEvents(eList || []);
-      setGalleries(gList || []);
-      setSelections(sList || []);
+
+      // Protect against wiping data if serverless cold container returned empty
+      setClients((prev) => {
+        if (!cList || cList.length === 0) return prev;
+        const map = new Map<string, Client>();
+        prev.forEach((c) => map.set(c.id, c));
+        cList.forEach((c) => map.set(c.id, c));
+        return Array.from(map.values());
+      });
+
+      setEvents((prev) => {
+        if (!eList || eList.length === 0) return prev;
+        const map = new Map<string, PhotoEvent>();
+        prev.forEach((e) => map.set(e.id, e));
+        eList.forEach((e) => map.set(e.id, e));
+        return Array.from(map.values());
+      });
+
+      setGalleries((prev) => {
+        const merged = new Map<string, Gallery>();
+        prev.forEach((g) => merged.set(g.id, g));
+        if (gList && gList.length > 0) {
+          gList.forEach((g) => merged.set(g.id, g));
+        }
+        return Array.from(merged.values());
+      });
+
+      setSelections((prev) => {
+        if (!sList || sList.length === 0) return prev;
+        return sList;
+      });
+
       if (stats) {
         setDashboardStats(stats);
       }
 
-      if (gList && gList.length > 0 && !selectedGalleryForPhotos) {
-        selectGalleryForPhotoManagement(gList[0]);
-      }
+      // Preserve currently selected gallery
+      setSelectedGalleryForPhotos((prev) => {
+        if (!prev) {
+          return gList && gList.length > 0 ? gList[0] : null;
+        }
+        const updated = (gList || []).find((g) => g.id === prev.id);
+        return updated || prev;
+      });
     } catch (err) {
       console.error('Error fetching admin data:', err);
     } finally {
@@ -415,6 +448,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
       if (res && res.photos) {
         setCurrentGalleryPhotos((prev) => [...prev, ...res.photos]);
+        setSelectedGalleryForPhotos((prev) => (prev ? { ...prev, photoCount: (prev.photoCount || 0) + res.photos.length } : targetGallery));
+        setGalleries((prev) => prev.map((g) => (g.id === targetGallery.id ? { ...g, photoCount: (g.photoCount || 0) + res.photos.length } : g)));
       }
       await loadAllAdminData();
       alert(`✨ Sucesso! ${res.count || filesArray.length} fotografia(s) adicionada(s) à galeria "${targetGallery.title}" com numeração sequencial automática.`);

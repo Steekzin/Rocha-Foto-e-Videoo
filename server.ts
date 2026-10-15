@@ -508,6 +508,9 @@ async function setupRoutes() {
 
     db.clients.unshift(newClient);
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncClientToSupabase(newClient).catch((e) => console.warn('[Supabase Sync Client Error]:', e.message));
+    }
     res.status(201).json(newClient);
   });
 
@@ -523,6 +526,9 @@ async function setupRoutes() {
       ...req.body,
     };
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncClientToSupabase(db.clients[clientIndex]).catch((e) => console.warn('[Supabase Sync Client Error]:', e.message));
+    }
     res.json(db.clients[clientIndex]);
   });
 
@@ -611,6 +617,9 @@ async function setupRoutes() {
 
     db.events.unshift(newEvent);
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncEventToSupabase(newEvent).catch((e) => console.warn('[Supabase Sync Event Error]:', e.message));
+    }
     res.status(201).json(newEvent);
   });
 
@@ -621,6 +630,9 @@ async function setupRoutes() {
 
     db.events[idx] = { ...db.events[idx], ...req.body };
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncEventToSupabase(db.events[idx]).catch((e) => console.warn('[Supabase Sync Event Error]:', e.message));
+    }
     res.json(db.events[idx]);
   });
 
@@ -628,6 +640,9 @@ async function setupRoutes() {
     const { id } = req.params;
     db.events = db.events.filter((e) => e.id !== id);
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      deleteEventFromSupabase(id).catch((e) => console.warn('[Supabase Delete Event Error]:', e.message));
+    }
     res.json({ success: true });
   });
 
@@ -695,6 +710,9 @@ async function setupRoutes() {
 
     db.galleries.unshift(newGallery);
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncGalleryToSupabase(newGallery).catch((e) => console.warn('[Supabase Sync Gallery Error]:', e.message));
+    }
     res.status(201).json(newGallery);
   });
 
@@ -705,6 +723,9 @@ async function setupRoutes() {
 
     db.galleries[idx] = { ...db.galleries[idx], ...req.body };
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      syncGalleryToSupabase(db.galleries[idx]).catch((e) => console.warn('[Supabase Sync Gallery Error]:', e.message));
+    }
     res.json(db.galleries[idx]);
   });
 
@@ -713,6 +734,9 @@ async function setupRoutes() {
     db.galleries = db.galleries.filter((g) => g.id !== id);
     db.photos = db.photos.filter((p) => p.galleryId !== id);
     saveDatabase();
+    if (isSupabaseConfigured()) {
+      deleteGalleryFromSupabase(id).catch((e) => console.warn('[Supabase Delete Gallery Error]:', e.message));
+    }
     res.json({ success: true });
   });
 
