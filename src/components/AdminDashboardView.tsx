@@ -45,6 +45,8 @@ import { api, DashboardStats } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
 import { AdminPortfolioTab } from './AdminPortfolioTab.js';
 import { AdminDatabaseTab } from './AdminDatabaseTab.js';
+import { supabase } from '../services/supabaseClient.js';
+import { optimizePhotoForWeb } from '../utils/imageOptimizer.js';
 
 interface AdminDashboardViewProps {
   currentUser: User | null;
@@ -380,9 +382,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   // Photo Upload Actions
   const handleBatchPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedGalleryForPhotos) {
-      alert('Selecione uma galeria primeiro.');
-      return;
+    let targetGallery = selectedGalleryForPhotos;
+    if (!targetGallery) {
+      if (galleries.length > 0) {
+        targetGallery = galleries[0];
+        setSelectedGalleryForPhotos(targetGallery);
+      } else {
+        alert('Nenhuma galeria encontrada. Crie uma nova galeria na aba "Galerias" ou no botão "+ Nova Galeria" antes de fazer upload.');
+        e.target.value = '';
+        return;
+      }
     }
 
     const files = e.target.files;
@@ -391,38 +400,81 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setLoading(true);
     const photosToUpload: Partial<Photo>[] = [];
 
-    // Read files as base64 or object URLs
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const reader = new FileReader();
+    try {
+      // 1. Optimize each photo and upload to Supabase Storage if available
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        let photoUrl = '';
 
-      await new Promise<void>((resolve) => {
-        reader.onload = (event) => {
-          const base64 = event.target?.result as string;
+        try {
+          const optimized = await optimizePhotoForWeb(file);
+          
+          // Try direct Supabase Storage upload for maximum performance and 0 payload limit
+          if (supabase) {
+            try {
+              const cleanFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const storagePath = `galleries/${targetGallery.id}/${Date.now()}_${i}_${cleanFileName}`;
+              const { error: sbErr } = await supabase.storage
+                .from('portfolio')
+                .upload(storagePath, optimized, {
+                  contentType: optimized.type || 'image/jpeg',
+                  upsert: true,
+                });
+
+              if (!sbErr) {
+                const { data: publicData } = supabase.storage
+                  .from('portfolio')
+                  .getPublicUrl(storagePath);
+                if (publicData?.publicUrl) {
+                  photoUrl = publicData.publicUrl;
+                }
+              }
+            } catch (sbUploadErr) {
+              console.warn('[Supabase Direct Gallery Upload Fallback]:', sbUploadErr);
+            }
+          }
+
+          // Fallback to lightweight optimized base64 if Supabase storage was not used
+          if (!photoUrl) {
+            photoUrl = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (event) => resolve((event.target?.result as string) || '');
+              reader.readAsDataURL(optimized);
+            });
+          }
+        } catch (optErr) {
+          console.warn('[Optimization fallback for file]:', file.name, optErr);
+          photoUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve((event.target?.result as string) || '');
+            reader.readAsDataURL(file);
+          });
+        }
+
+        if (photoUrl) {
           photosToUpload.push({
-            imageUrl: base64,
+            imageUrl: photoUrl,
             description: file.name.replace(/\.[^/.]+$/, ''),
           });
-          resolve();
-        };
-        reader.readAsDataURL(file);
-      });
-    }
+        }
+      }
 
-    try {
-      const BATCH_SIZE = 5;
+      // 2. Upload in micro-batches of 2 photos to prevent Vercel 4.5MB request limit
+      const BATCH_SIZE = 2;
       const allNewPhotos: Photo[] = [];
       for (let i = 0; i < photosToUpload.length; i += BATCH_SIZE) {
         const batch = photosToUpload.slice(i, i + BATCH_SIZE);
-        const res = await api.uploadPhotos(selectedGalleryForPhotos.id, batch);
-        if (res.photos) {
+        const res = await api.uploadPhotos(targetGallery.id, batch);
+        if (res && res.photos) {
           allNewPhotos.push(...res.photos);
         }
       }
-      setCurrentGalleryPhotos([...currentGalleryPhotos, ...allNewPhotos]);
-      loadAllAdminData();
-      alert(`${photosToUpload.length} fotografias enviadas com numeração automática gerada!`);
+
+      setCurrentGalleryPhotos((prev) => [...prev, ...allNewPhotos]);
+      await loadAllAdminData();
+      alert(`✨ ${allNewPhotos.length} fotografia(s) enviada(s) com sucesso com numeração sequencial gerada!`);
     } catch (err: any) {
+      console.error('[Upload Error Caught]:', err);
       alert(err.message || 'Erro ao enviar fotos.');
     } finally {
       setLoading(false);
@@ -1255,12 +1307,25 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   }}
                   className="bg-[#0c0e11] border border-[#252a35] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#c99e64]"
                 >
-                  {galleries.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.title} ({g.clientName})
-                    </option>
-                  ))}
+                  {galleries.length === 0 ? (
+                    <option value="">Nenhuma galeria encontrada</option>
+                  ) : (
+                    galleries.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.title} ({g.clientName})
+                      </option>
+                    ))
+                  )}
                 </select>
+                {galleries.length === 0 && (
+                  <button
+                    onClick={() => setShowGalleryModal(true)}
+                    className="px-2.5 py-1.5 bg-[#c99e64]/20 hover:bg-[#c99e64]/30 text-[#c99e64] border border-[#c99e64]/40 rounded-lg text-xs font-semibold flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Criar Galeria</span>
+                  </button>
+                )}
               </div>
 
               {/* Action Buttons: Batch Upload, Demo Photos, Renumber */}

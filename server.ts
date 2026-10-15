@@ -171,8 +171,17 @@ function loadDatabase() {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (fs.existsSync(DB_FILE)) {
-      const data = fs.readFileSync(DB_FILE, 'utf-8');
+    const seedDbFile = path.join(currentDir, 'data', 'rocha_db.json');
+    if (!fs.existsSync(DB_FILE) && fs.existsSync(seedDbFile)) {
+      try {
+        fs.copyFileSync(seedDbFile, DB_FILE);
+      } catch (copyErr) {
+        console.warn('Could not copy seed DB to /tmp:', copyErr);
+      }
+    }
+    const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : (fs.existsSync(seedDbFile) ? seedDbFile : null);
+    if (targetFile) {
+      const data = fs.readFileSync(targetFile, 'utf-8');
       const parsed = JSON.parse(data);
       if (parsed.clients && parsed.galleries) {
         db = parsed;
@@ -708,49 +717,82 @@ async function setupRoutes() {
   });
 
   // Photos Management & Upload within a Gallery
-  app.post('/api/galleries/:id/photos', (req: Request, res: Response) => {
-    const { id: galleryId } = req.params;
-    const gallery = db.galleries.find((g) => g.id === galleryId);
-    if (!gallery) return res.status(404).json({ error: 'Galeria não encontrada' });
+  app.post('/api/galleries/:id/photos', async (req: Request, res: Response) => {
+    try {
+      const { id: galleryId } = req.params;
+      let gallery = db.galleries.find((g) => g.id === galleryId);
+      if (!gallery) {
+        if (db.galleries.length === 0) {
+          db.galleries = [...INITIAL_GALLERIES];
+          gallery = db.galleries.find((g) => g.id === galleryId) || db.galleries[0];
+        }
+      }
+      if (!gallery) {
+        gallery = {
+          id: galleryId,
+          eventId: 'evt-1',
+          eventName: 'Galeria Geral',
+          clientId: 'cli-1',
+          clientName: 'Cliente',
+          title: 'Galeria de Fotos',
+          slug: `galeria-${galleryId}`,
+          status: 'ativa',
+          pricingType: 'none',
+          defaultPrice: 0,
+          photoCount: 0,
+          createdAt: new Date().toISOString(),
+        };
+        db.galleries.push(gallery);
+      }
 
-    const existingPhotos = db.photos
-      .filter((p) => p.galleryId === galleryId)
-      .sort((a, b) => a.order - b.order);
+      const existingPhotos = db.photos
+        .filter((p) => p.galleryId === gallery.id)
+        .sort((a, b) => a.order - b.order);
 
-    let nextOrder = existingPhotos.length > 0 ? Math.max(...existingPhotos.map((p) => p.order)) + 1 : 1;
+      let nextOrder = existingPhotos.length > 0 ? Math.max(...existingPhotos.map((p) => p.order)) + 1 : 1;
 
-    // Body can receive an array of photos or single photo
-    const incoming = Array.isArray(req.body) ? req.body : [req.body];
-    const addedPhotos: Photo[] = [];
+      // Body can receive an array of photos or single photo
+      const incoming = Array.isArray(req.body) ? req.body : [req.body];
+      const addedPhotos: Photo[] = [];
 
-    for (const item of incoming) {
-      const photoOrder = nextOrder++;
-      const numFormatted = String(photoOrder).padStart(3, '0');
-      const photoPrice = item.price !== undefined ? Number(item.price) : gallery.defaultPrice;
+      for (const item of incoming) {
+        if (!item || (!item.imageUrl && !item.url)) continue;
+        const photoOrder = nextOrder++;
+        const numFormatted = String(photoOrder).padStart(3, '0');
+        const photoPrice = item.price !== undefined ? Number(item.price) : (gallery.defaultPrice || 0);
 
-      const newPhoto: Photo = {
-        id: `p-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        galleryId,
-        number: item.number || numFormatted,
-        imageUrl: item.imageUrl || item.url,
-        description: item.description || '',
-        price: photoPrice,
-        order: photoOrder,
-        createdAt: new Date().toISOString(),
-      };
+        const newPhoto: Photo = {
+          id: `p-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+          galleryId: gallery.id,
+          number: item.number || numFormatted,
+          imageUrl: item.imageUrl || item.url,
+          description: item.description || '',
+          price: photoPrice,
+          order: photoOrder,
+          createdAt: new Date().toISOString(),
+        };
 
-      db.photos.push(newPhoto);
-      addedPhotos.push(newPhoto);
+        db.photos.push(newPhoto);
+        addedPhotos.push(newPhoto);
+      }
+
+      // update gallery cover if not present
+      if (!gallery.coverImage && addedPhotos[0]?.imageUrl) {
+        gallery.coverImage = addedPhotos[0].imageUrl;
+      }
+      gallery.photoCount = db.photos.filter((p) => p.galleryId === gallery.id).length;
+
+      try {
+        saveDatabase();
+      } catch (saveErr) {
+        console.warn('Failed to save database to disk:', saveErr);
+      }
+
+      res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos });
+    } catch (err: any) {
+      console.error('[Gallery Photos Upload Error]:', err);
+      res.status(500).json({ error: 'Erro ao fazer upload das fotos: ' + (err.message || String(err)) });
     }
-
-    // update gallery cover if not present
-    if (!gallery.coverImage && addedPhotos[0]?.imageUrl) {
-      gallery.coverImage = addedPhotos[0].imageUrl;
-    }
-    gallery.photoCount = db.photos.filter((p) => p.galleryId === galleryId).length;
-
-    saveDatabase();
-    res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos });
   });
 
   // Update single photo
