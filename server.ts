@@ -262,7 +262,7 @@ function loadDatabase() {
           updated = true;
         }
 
-        if (!Array.isArray(db.eventAlbums) || db.eventAlbums.length === 0) {
+        if (!Array.isArray(db.eventAlbums)) {
           db.eventAlbums = [...INITIAL_EVENT_ALBUMS];
           updated = true;
         }
@@ -1061,100 +1061,120 @@ async function setupRoutes() {
     });
   });
 
-  app.post('/api/admin/event-albums', (req: Request, res: Response) => {
-    const { title, category, date, description, coverImage, active, featured, portfolioPhotoId } = req.body;
-    if (!title || !title.trim()) {
-      return res.status(400).json({ error: 'Título do álbum é obrigatório' });
-    }
-
-    const slug = toSlug(title);
-    const newAlbumId = `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    let finalCover = coverImage || '';
-
-    if (portfolioPhotoId) {
-      const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
-      if (pPhoto) {
-        pPhoto.albumId = newAlbumId;
-        if (!finalCover) finalCover = pPhoto.imageUrl;
+  app.post(['/api/admin/event-albums', '/api/event-albums'], (req: Request, res: Response) => {
+    try {
+      const { title, category, date, description, coverImage, active, featured, portfolioPhotoId } = req.body;
+      if (!title || !title.trim()) {
+        return res.status(400).json({ error: 'Título do álbum é obrigatório' });
       }
-    }
 
-    const newAlbum: EventAlbum = {
-      id: newAlbumId,
-      title: title.trim(),
-      slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
-      category: category || 'Casamentos',
-      date: date || new Date().toISOString().split('T')[0],
-      description: description || '',
-      coverImage: finalCover,
-      photoCount: 0,
-      photos: [],
-      portfolioPhotoId: portfolioPhotoId || undefined,
-      active: active !== false,
-      featured: Boolean(featured),
-      order: (db.eventAlbums?.length || 0) + 1,
-      createdAt: new Date().toISOString(),
-    };
+      const slug = toSlug(title);
+      const newAlbumId = `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      let finalCover = coverImage || '';
 
-    if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
-    db.eventAlbums.unshift(newAlbum);
-    saveDatabase();
-    res.status(201).json(newAlbum);
-  });
-
-  app.put('/api/admin/event-albums/:id', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const idx = (db.eventAlbums || []).findIndex((a) => a.id === id);
-    if (idx === -1) return res.status(404).json({ error: 'Álbum não encontrado' });
-
-    const prevAlbum = db.eventAlbums[idx];
-    const { portfolioPhotoId } = req.body;
-
-    if (portfolioPhotoId !== undefined) {
-      // Clear previous portfolio photos bound to this album
-      db.portfolioPhotos.forEach((p) => {
-        if (p.albumId === id) {
-          p.albumId = undefined;
-        }
-      });
-      // Bind new portfolio photo if selected
       if (portfolioPhotoId) {
+        if (!Array.isArray(db.portfolioPhotos)) db.portfolioPhotos = [];
         const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
         if (pPhoto) {
-          pPhoto.albumId = id;
-          if (!req.body.coverImage && !prevAlbum.coverImage) {
-            req.body.coverImage = pPhoto.imageUrl;
+          pPhoto.albumId = newAlbumId;
+          if (!finalCover) finalCover = pPhoto.imageUrl;
+        }
+      }
+
+      const newAlbum: EventAlbum = {
+        id: newAlbumId,
+        title: title.trim(),
+        slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
+        category: category || 'Casamentos',
+        date: date || new Date().toISOString().split('T')[0],
+        description: description || '',
+        coverImage: finalCover,
+        photoCount: 0,
+        photos: [],
+        portfolioPhotoId: portfolioPhotoId || undefined,
+        active: active !== false,
+        featured: Boolean(featured),
+        order: (Array.isArray(db.eventAlbums) ? db.eventAlbums.length : 0) + 1,
+        createdAt: new Date().toISOString(),
+      };
+
+      if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+      db.eventAlbums.unshift(newAlbum);
+      saveDatabase();
+      return res.status(201).json(newAlbum);
+    } catch (err: any) {
+      console.error('[Event Album Create Error]:', err);
+      return res.status(500).json({ error: 'Erro ao criar álbum de evento: ' + (err.message || String(err)) });
+    }
+  });
+
+  app.put(['/api/admin/event-albums/:id', '/api/event-albums/:id'], (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      if (!Array.isArray(db.eventAlbums)) {
+        db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
+      }
+      const idx = db.eventAlbums.findIndex((a) => a.id === id || a.slug === id);
+      if (idx === -1) return res.status(404).json({ error: 'Álbum não encontrado' });
+
+      const prevAlbum = db.eventAlbums[idx];
+      const { portfolioPhotoId } = req.body;
+
+      if (portfolioPhotoId !== undefined) {
+        if (!Array.isArray(db.portfolioPhotos)) db.portfolioPhotos = [];
+        // Clear previous portfolio photos bound to this album
+        db.portfolioPhotos.forEach((p) => {
+          if (p.albumId === id) {
+            p.albumId = undefined;
+          }
+        });
+        // Bind new portfolio photo if selected
+        if (portfolioPhotoId) {
+          const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
+          if (pPhoto) {
+            pPhoto.albumId = id;
+            if (!req.body.coverImage && !prevAlbum.coverImage) {
+              req.body.coverImage = pPhoto.imageUrl;
+            }
           }
         }
       }
-    }
 
-    db.eventAlbums[idx] = {
-      ...db.eventAlbums[idx],
-      ...req.body,
-    };
-    saveDatabase();
-    res.json(db.eventAlbums[idx]);
+      db.eventAlbums[idx] = {
+        ...db.eventAlbums[idx],
+        ...req.body,
+      };
+      saveDatabase();
+      return res.json(db.eventAlbums[idx]);
+    } catch (err: any) {
+      console.error('[Event Album Update Error]:', err);
+      return res.status(500).json({ error: 'Erro ao atualizar álbum de evento: ' + (err.message || String(err)) });
+    }
   });
 
   app.delete(['/api/admin/event-albums/:id', '/api/event-albums/:id'], (req: Request, res: Response) => {
-    const { id } = req.params;
-    if (!Array.isArray(db.eventAlbums)) {
-      db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
-    }
-    db.eventAlbums = (db.eventAlbums || []).filter((a) => a.id !== id && a.slug !== id);
+    try {
+      const { id } = req.params;
+      if (!Array.isArray(db.eventAlbums)) {
+        db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
+      }
+      db.eventAlbums = db.eventAlbums.filter((a) => a.id !== id && a.slug !== id);
 
-    // Unlink any portfolio photos tied to this album
-    if (Array.isArray(db.portfolioPhotos)) {
-      db.portfolioPhotos.forEach((p) => {
-        if (p.albumId === id) {
-          p.albumId = undefined;
-        }
-      });
-    }
+      // Unlink any portfolio photos tied to this album
+      if (Array.isArray(db.portfolioPhotos)) {
+        db.portfolioPhotos.forEach((p) => {
+          if (p.albumId === id) {
+            p.albumId = undefined;
+          }
+        });
+      }
 
-    saveDatabase();
-    res.json({ success: true });
+      saveDatabase();
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Event Album Delete Error]:', err);
+      return res.status(500).json({ error: 'Erro ao excluir álbum de evento: ' + (err.message || String(err)) });
+    }
   });
 
   // Multipart upload of photos to an event album

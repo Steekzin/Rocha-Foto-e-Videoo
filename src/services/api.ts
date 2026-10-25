@@ -2485,8 +2485,21 @@ export const api = {
       if (all) q.set('all', 'true');
       const res = await fetch(`${API_BASE}/event-albums?${q.toString()}`);
       if (!res.ok) throw new Error('Falha ao carregar álbuns');
-      return await res.json();
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        try {
+          localStorage.setItem('rocha_cached_event_albums', JSON.stringify(data));
+        } catch {}
+      }
+      return data;
     } catch {
+      try {
+        const cached = localStorage.getItem('rocha_cached_event_albums');
+        if (cached) {
+          const list = JSON.parse(cached);
+          if (Array.isArray(list)) return list;
+        }
+      } catch {}
       return [];
     }
   },
@@ -2502,12 +2515,28 @@ export const api = {
   },
 
   async createEventAlbum(album: Partial<EventAlbum>): Promise<EventAlbum> {
-    const res = await fetch(`${API_BASE}/admin/event-albums`, {
-      method: 'POST',
-      headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(album),
-    });
-    return parseJsonResponse(res, 'Erro ao criar álbum de evento.');
+    try {
+      const res = await fetch(`${API_BASE}/admin/event-albums`, {
+        method: 'POST',
+        headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(album),
+      });
+      return await parseJsonResponse(res, 'Erro ao criar álbum de evento.');
+    } catch (apiErr: any) {
+      // Retry once after 600ms in case the server was temporarily rebooting
+      try {
+        await new Promise((r) => setTimeout(r, 600));
+        const retryRes = await fetch(`${API_BASE}/admin/event-albums`, {
+          method: 'POST',
+          headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(album),
+        });
+        if (retryRes.ok) {
+          return await retryRes.json();
+        }
+      } catch {}
+      throw apiErr;
+    }
   },
 
   async updateEventAlbum(id: string, album: Partial<EventAlbum>): Promise<EventAlbum> {
