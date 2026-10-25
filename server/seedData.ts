@@ -1,4 +1,4 @@
-import type { Client, PhotoEvent, Gallery, Photo, SelectionRecord, PortfolioItem, PortfolioCategory, PortfolioPhoto } from '../src/types.ts';
+import type { Client, PhotoEvent, Gallery, Photo, SelectionRecord, PortfolioItem, PortfolioCategory, PortfolioPhoto, EventAlbum, EventAlbumPhoto } from '../src/types.ts';
 
 export const INITIAL_CLIENTS: Client[] = [
   {
@@ -400,6 +400,16 @@ export const INITIAL_SELECTIONS: SelectionRecord[] = [
 
 export const INITIAL_PORTFOLIO: PortfolioItem[] = [
   {
+    id: 'port-civil-bruna-charles',
+    title: 'Civil Bruna & Charles',
+    category: 'Casamentos',
+    imageUrl: '/assets/aistudio/image_e3b46ef9.png',
+    aspect: 'portrait',
+    featured: true,
+    caption: 'Ensaio fotográfico e cerimônia do casamento civil de Bruna & Charles em Montes Claros.',
+    albumId: 'album-civil-bruna-charles',
+  },
+  {
     id: 'port-1',
     title: 'Cerimônia Religiosa no Altar',
     category: 'Casamentos',
@@ -425,6 +435,7 @@ export const INITIAL_PORTFOLIO: PortfolioItem[] = [
     aspect: 'portrait',
     featured: true,
     caption: 'Ensaio temático com iluminação de estúdio profissional.',
+    albumId: 'album-ensaio-15-anos-beatriz',
   },
   {
     id: 'port-4',
@@ -640,6 +651,114 @@ export const INITIAL_PORTFOLIO_PHOTOS: PortfolioPhoto[] = INITIAL_PORTFOLIO.map(
     aspect: item.aspect || 'portrait',
     active: true,
     featured: Boolean(item.featured),
+    albumId: item.albumId,
     createdAt: '2026-01-01T00:00:00Z',
   };
 });
+
+export const INITIAL_EVENT_ALBUMS: EventAlbum[] = [
+  {
+    id: 'album-civil-bruna-charles',
+    title: 'Civil Bruna & Charles',
+    slug: 'civil-bruna-charles',
+    category: 'Casamentos',
+    date: '2026-10-15',
+    description: 'Ensaio fotográfico e cerimônia do casamento civil de Bruna & Charles em Montes Claros.',
+    coverImage: '/assets/aistudio/image_e3b46ef9.png',
+    photoCount: 5,
+    active: true,
+    featured: true,
+    order: 1,
+    createdAt: '2026-10-15T10:00:00Z',
+    photos: [
+      {
+        id: 'eap-1',
+        albumId: 'album-civil-bruna-charles',
+        imageUrl: '/assets/aistudio/image_e3b46ef9.png',
+        title: 'Bruna & Charles — Retrato Oficial',
+        order: 1,
+        createdAt: '2026-10-15T10:00:00Z',
+      },
+      {
+        id: 'eap-2',
+        albumId: 'album-civil-bruna-charles',
+        imageUrl: '/assets/aistudio/image_f77d7182.png',
+        title: 'Momentos da Cerimônia Civil',
+        order: 2,
+        createdAt: '2026-10-15T10:01:00Z',
+      },
+      {
+        id: 'eap-3',
+        albumId: 'album-civil-bruna-charles',
+        imageUrl: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80',
+        title: 'Celebração e Emoção',
+        order: 3,
+        createdAt: '2026-10-15T10:02:00Z',
+      },
+      {
+        id: 'eap-4',
+        albumId: 'album-civil-bruna-charles',
+        imageUrl: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=1200&q=80',
+        title: 'Detalhes e Alianças',
+        order: 4,
+        createdAt: '2026-10-15T10:03:00Z',
+      },
+      {
+        id: 'eap-5',
+        albumId: 'album-civil-bruna-charles',
+        imageUrl: 'https://images.unsplash.com/photo-1583939003579-730e3918a45a?auto=format&fit=crop&w=1200&q=80',
+        title: 'Cumplicidade dos Noivos',
+        order: 5,
+        createdAt: '2026-10-15T10:04:00Z',
+      },
+    ],
+  },
+  {
+    id: 'album-ensaio-15-anos-beatriz',
+    title: '15 Anos Beatriz Vasconcelos',
+    slug: '15-anos-beatriz-vasconcelos',
+    category: '15 Anos',
+    date: '2026-09-20',
+    description: 'Ensaio fotográfico de debutante e festa de 15 anos com iluminação especial.',
+    coverImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+    photoCount: 4,
+    active: true,
+    featured: true,
+    order: 2,
+    createdAt: '2026-09-20T14:00:00Z',
+    photos: [
+      {
+        id: 'eap-b1',
+        albumId: 'album-ensaio-15-anos-beatriz',
+        imageUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+        title: 'Beatriz — Debutante',
+        order: 1,
+        createdAt: '2026-09-20T14:00:00Z',
+      },
+      {
+        id: 'eap-b2',
+        albumId: 'album-ensaio-15-anos-beatriz',
+        imageUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=1200&q=80',
+        title: 'Ensaio Studio e Produção',
+        order: 2,
+        createdAt: '2026-09-20T14:01:00Z',
+      },
+      {
+        id: 'eap-b3',
+        albumId: 'album-ensaio-15-anos-beatriz',
+        imageUrl: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=1200&q=80',
+        title: 'Momentos Espontâneos',
+        order: 3,
+        createdAt: '2026-09-20T14:02:00Z',
+      },
+      {
+        id: 'eap-b4',
+        albumId: 'album-ensaio-15-anos-beatriz',
+        imageUrl: 'https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?auto=format&fit=crop&w=1200&q=80',
+        title: 'Retrato de Estúdio',
+        order: 4,
+        createdAt: '2026-09-20T14:03:00Z',
+      },
+    ],
+  },
+];

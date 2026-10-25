@@ -9,8 +9,10 @@ import {
   Search,
   MessageCircle,
   ExternalLink,
+  Link as LinkIcon,
+  ArrowLeft,
 } from 'lucide-react';
-import { PortfolioItem, PortfolioCategory } from '../types.js';
+import { PortfolioItem, PortfolioCategory, EventAlbum, EventAlbumPhoto } from '../types.js';
 import { api } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
 
@@ -57,18 +59,26 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
   const [loading, setLoading] = useState<boolean>(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
+  // Event Albums integration (as requested in user screenshots)
+  const [eventAlbums, setEventAlbums] = useState<EventAlbum[]>([]);
+  const [openedAlbum, setOpenedAlbum] = useState<EventAlbum | null>(null);
+  const [albumLoading, setAlbumLoading] = useState<boolean>(false);
+  const [albumLightboxIndex, setAlbumLightboxIndex] = useState<number | null>(null);
+
   const galleryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function loadPortfolio() {
       try {
         setLoading(true);
-        const [catsData, photosData] = await Promise.all([
+        const [catsData, photosData, albumsData] = await Promise.all([
           api.getPortfolioCategories(false),
           api.getPortfolio(),
+          api.getEventAlbums(undefined, false).catch(() => []),
         ]);
         setCategories(catsData);
         setItems(photosData);
+        setEventAlbums(albumsData || []);
       } catch (err) {
         console.error('Error loading portfolio:', err);
       } finally {
@@ -77,6 +87,63 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
     }
     loadPortfolio();
   }, []);
+
+  const getAlbumForItem = (item: PortfolioItem): EventAlbum | undefined => {
+    if (item.albumId) {
+      const match = eventAlbums.find((a) => a.id === item.albumId);
+      if (match) return match;
+    }
+    const byPhotoId = eventAlbums.find((a) => a.portfolioPhotoId && String(a.portfolioPhotoId) === String(item.id));
+    if (byPhotoId) return byPhotoId;
+
+    const cleanItemTitle = (item.title || '').trim().toLowerCase();
+    const byTitle = eventAlbums.find(
+      (a) => a.title.trim().toLowerCase() === cleanItemTitle || a.slug === item.id || a.id === item.id
+    );
+    if (byTitle) return byTitle;
+    if (cleanItemTitle.includes('bruna') && cleanItemTitle.includes('charles')) {
+      return eventAlbums.find((a) => a.id === 'album-civil-bruna-charles');
+    }
+    if (cleanItemTitle.includes('beatriz') || cleanItemTitle.includes('15 anos')) {
+      return eventAlbums.find((a) => a.id === 'album-ensaio-15-anos-beatriz');
+    }
+    return undefined;
+  };
+
+  const handleOpenAlbum = async (album: EventAlbum) => {
+    try {
+      setAlbumLoading(true);
+      const full = await api.getEventAlbum(album.id);
+      setOpenedAlbum(full || album);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      console.error('Error loading album details:', err);
+      setOpenedAlbum(album);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } finally {
+      setAlbumLoading(false);
+    }
+  };
+
+  // Keyboard navigation for album lightbox
+  useEffect(() => {
+    if (albumLightboxIndex === null || !openedAlbum?.photos) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAlbumLightboxIndex(null);
+      if (e.key === 'ArrowRight') {
+        setAlbumLightboxIndex((prev) =>
+          prev !== null ? (prev + 1) % openedAlbum.photos!.length : null
+        );
+      }
+      if (e.key === 'ArrowLeft') {
+        setAlbumLightboxIndex((prev) =>
+          prev !== null ? (prev - 1 + openedAlbum.photos!.length) % openedAlbum.photos!.length : null
+        );
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [albumLightboxIndex, openedAlbum]);
 
   // Compute category counts
   const categoryCounts = React.useMemo(() => {
@@ -192,17 +259,111 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* ========================================================= */}
-        {/* HEADER DO PORTFÓLIO (ESTILO CONFORME REFERÊNCIA DO CLIENTE) */}
+        {/* VISTA 1: ÁLBUM DE EVENTO COMPLETO (CONFORME IMAGEM 2)    */}
         {/* ========================================================= */}
-        <header className="text-center max-w-4xl mx-auto mb-8 sm:mb-10">
-          {/* Cursive / Script Title */}
-          <h1
-            className={`font-script text-5xl sm:text-6xl md:text-7xl font-normal tracking-wide transition-colors ${
-              isLight ? 'text-neutral-900' : 'text-white'
-            }`}
-          >
-            Portfólio
-          </h1>
+        {openedAlbum ? (
+          <div>
+            {/* Back Button */}
+            <div className="mb-6">
+              <button
+                type="button"
+                onClick={() => setOpenedAlbum(null)}
+                className={`inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider py-2 px-3.5 rounded-lg border transition-all cursor-pointer ${
+                  isLight
+                    ? 'border-neutral-200 text-neutral-600 hover:text-black hover:border-neutral-400 bg-neutral-50'
+                    : 'border-[#222730] text-neutral-400 hover:text-white hover:border-[#c99e64] bg-[#12151a]'
+                }`}
+              >
+                <ChevronLeft className="w-4 h-4 text-[#c99e64]" />
+                <span>Voltar ao Portfólio</span>
+              </button>
+            </div>
+
+            {/* Album Header Centered (matching image_f77d7182.png) */}
+            <header className="text-center max-w-4xl mx-auto mb-10">
+              <h1
+                className={`text-2xl sm:text-3xl md:text-4xl font-light tracking-wide transition-colors ${
+                  isLight ? 'text-neutral-700' : 'text-neutral-200'
+                }`}
+              >
+                {openedAlbum.title}
+              </h1>
+              {openedAlbum.description && (
+                <p
+                  className={`text-xs sm:text-sm font-light max-w-xl mx-auto mt-2 leading-relaxed ${
+                    isLight ? 'text-neutral-500' : 'text-neutral-400'
+                  }`}
+                >
+                  {openedAlbum.description}
+                </p>
+              )}
+              <div className="flex items-center justify-center gap-2 mt-2 text-[11px] text-[#c99e64]">
+                <span>{openedAlbum.category}</span>
+                {openedAlbum.photos && (
+                  <>
+                    <span>•</span>
+                    <span>{openedAlbum.photos.length} fotos registradas</span>
+                  </>
+                )}
+              </div>
+            </header>
+
+            {/* Album Photos Grid */}
+            {albumLoading ? (
+              <div className="py-24 text-center">
+                <div className="w-8 h-8 border-2 border-[#c99e64] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-xs text-neutral-400 tracking-widest uppercase">Carregando álbum completo...</p>
+              </div>
+            ) : !openedAlbum.photos || openedAlbum.photos.length === 0 ? (
+              <div className="py-16 text-center text-xs text-neutral-400">
+                Nenhuma fotografia cadastrada neste álbum ainda.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
+                {openedAlbum.photos.map((photo, pIdx) => (
+                  <div
+                    key={photo.id}
+                    onClick={() => setAlbumLightboxIndex(pIdx)}
+                    className={`group relative rounded-xl overflow-hidden border cursor-pointer transition-all duration-300 shadow-sm hover:shadow-xl ${
+                      isLight
+                        ? 'bg-neutral-50 border-neutral-200 hover:border-[#c99e64]/60'
+                        : 'bg-[#12151a] border-[#20252e] hover:border-[#c99e64]/60'
+                    }`}
+                  >
+                    <div className="relative aspect-[4/3] overflow-hidden bg-[#181b22]">
+                      <img
+                        src={photo.imageUrl}
+                        alt={photo.title || `Foto ${pIdx + 1}`}
+                        loading="lazy"
+                        className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
+                      />
+                      {/* Hover overlay with center magnifying glass matching image_f77d7182.png */}
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                        <Search className="w-6 h-6 text-white drop-shadow-md" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ========================================================= */
+          /* VISTA 2: GRADE DO PORTFÓLIO PRINCIPAL                    */
+          /* ========================================================= */
+          <div>
+            {/* ========================================================= */}
+            {/* HEADER DO PORTFÓLIO (ESTILO CONFORME REFERÊNCIA DO CLIENTE) */}
+            {/* ========================================================= */}
+            <header className="text-center max-w-4xl mx-auto mb-8 sm:mb-10">
+              {/* Cursive / Script Title */}
+              <h1
+                className={`font-script text-5xl sm:text-6xl md:text-7xl font-normal tracking-wide transition-colors ${
+                  isLight ? 'text-neutral-900' : 'text-white'
+                }`}
+              >
+                Portfólio
+              </h1>
 
           {/* Thin subtle centered divider */}
           <div
@@ -344,77 +505,113 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
               transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
               className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
             >
-              {filteredItems.map((item, index) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.35, delay: Math.min(index * 0.035, 0.35) }}
-                  onClick={() => openLightbox(index)}
-                  className={`group relative rounded-xl overflow-hidden border cursor-pointer transition-all duration-300 shadow-sm hover:shadow-xl ${
-                    isLight
-                      ? 'bg-neutral-50 border-neutral-200/80 hover:border-[#c99e64]/60'
-                      : 'bg-[#12151a] border-[#20252e] hover:border-[#c99e64]/60'
-                  }`}
-                >
-                  <div className="relative aspect-[4/5] overflow-hidden bg-[#181b22]">
-                    <img
-                      src={item.imageUrl}
-                      alt={item.title}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
-                      onError={(e) => {
-                        const target = e.currentTarget;
-                        target.onerror = null;
-                        target.src =
-                          'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000"><rect width="800" height="1000" fill="%2312151a"/><circle cx="400" cy="460" r="44" fill="none" stroke="%23c99e64" stroke-width="2" opacity="0.6"/><circle cx="400" cy="460" r="18" fill="%23c99e64" opacity="0.6"/><text x="50%" y="550" dominant-baseline="middle" text-anchor="middle" fill="%23c99e64" font-family="sans-serif" font-size="16" letter-spacing="3" opacity="0.8">ROCHA FOTO &amp; VÍDEO</text></svg>';
-                      }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-70 group-hover:opacity-95 transition-opacity" />
+              {filteredItems.map((item, index) => {
+                const album = getAlbumForItem(item);
+                return (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.35, delay: Math.min(index * 0.035, 0.35) }}
+                    onClick={() => openLightbox(index)}
+                    className={`group relative rounded-xl overflow-hidden border cursor-pointer transition-all duration-300 shadow-sm hover:shadow-xl ${
+                      isLight
+                        ? 'bg-neutral-50 border-neutral-200/80 hover:border-[#c99e64]/60'
+                        : 'bg-[#12151a] border-[#20252e] hover:border-[#c99e64]/60'
+                    }`}
+                  >
+                    <div className="relative aspect-[4/5] overflow-hidden bg-[#181b22]">
+                      <img
+                        src={item.imageUrl}
+                        alt={item.title}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
+                        onError={(e) => {
+                          const target = e.currentTarget;
+                          target.onerror = null;
+                          target.src =
+                            'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000"><rect width="800" height="1000" fill="%2312151a"/><circle cx="400" cy="460" r="44" fill="none" stroke="%23c99e64" stroke-width="2" opacity="0.6"/><circle cx="400" cy="460" r="18" fill="%23c99e64" opacity="0.6"/><text x="50%" y="550" dominant-baseline="middle" text-anchor="middle" fill="%23c99e64" font-family="sans-serif" font-size="16" letter-spacing="3" opacity="0.8">ROCHA FOTO &amp; VÍDEO</text></svg>';
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-70 group-hover:opacity-95 transition-opacity" />
 
-                    {/* Category pill & Visual Number */}
-                    <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
-                      <span className="px-2.5 py-0.5 bg-black/70 backdrop-blur-md rounded-full text-[10px] uppercase tracking-wider text-[#c99e64] font-medium border border-[#c99e64]/30">
-                        {item.category}
-                      </span>
-                      {item.number && (
-                        <span className="px-2 py-0.5 bg-black/80 backdrop-blur-md rounded-full text-[10px] font-mono font-bold text-white/90 border border-white/15">
-                          #{item.number}
+                      {/* Category pill & Visual Number */}
+                      <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
+                        <span className="px-2.5 py-0.5 bg-black/70 backdrop-blur-md rounded-full text-[10px] uppercase tracking-wider text-[#c99e64] font-medium border border-[#c99e64]/30">
+                          {item.category}
+                        </span>
+                        {item.number && (
+                          <span className="px-2 py-0.5 bg-black/80 backdrop-blur-md rounded-full text-[10px] font-mono font-bold text-white/90 border border-white/15">
+                            #{item.number}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Featured badge if marked */}
+                      {item.featured && (
+                        <span className="absolute top-3 right-3 px-2 py-0.5 bg-[#c99e64] text-black rounded-full text-[9px] uppercase font-bold tracking-wider z-10">
+                          Destaque
                         </span>
                       )}
-                    </div>
 
-                    {/* Featured badge if marked */}
-                    {item.featured && (
-                      <span className="absolute top-3 right-12 px-2 py-0.5 bg-[#c99e64] text-black rounded-full text-[9px] uppercase font-bold tracking-wider z-10">
-                        Destaque
-                      </span>
-                    )}
+                      {/* ========================================================= */}
+                      {/* OVERLAY CENTRAL EXATAMENTE CONFORME IMAGEM 1 DO USUÁRIO   */}
+                      {/* Título centralizado + Ícone de Elo (🔗) + Lupa (🔍)       */}
+                      {/* ========================================================= */}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col items-center justify-center p-4 text-center z-20">
+                        <h3 className="text-base sm:text-lg md:text-xl font-normal text-white drop-shadow leading-snug max-w-[90%] mb-3">
+                          {item.title}
+                        </h3>
+                        <div className="flex items-center justify-center gap-5">
+                          {album && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenAlbum(album);
+                              }}
+                              className="p-2 rounded-full text-white hover:text-[#c99e64] hover:scale-125 transition-all cursor-pointer"
+                              title="Abrir álbum de fotos deste evento"
+                            >
+                              <LinkIcon className="w-5 h-5 -rotate-45" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openLightbox(index);
+                            }}
+                            className="p-2 rounded-full text-white hover:text-[#c99e64] hover:scale-125 transition-all cursor-pointer"
+                            title="Ampliar fotografia"
+                          >
+                            <Search className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
 
-                    {/* Hover expand icon */}
-                    <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                      <Maximize2 className="w-3.5 h-3.5" />
+                      {/* Bottom Title & Caption (Visible when not hovered) */}
+                      <div className="absolute bottom-3 left-3 right-3 text-left z-10 group-hover:opacity-0 transition-opacity">
+                        <h3 className="text-sm font-serif-luxury text-white leading-snug line-clamp-1">
+                          {formatDisplayTitle(item.title, item.category, item.number)}
+                        </h3>
+                        {item.caption && (
+                          <p className="text-[11px] text-[#9ca3af] mt-0.5 line-clamp-1">
+                            {item.caption}
+                          </p>
+                        )}
+                      </div>
                     </div>
-
-                    {/* Bottom Title & Caption */}
-                    <div className="absolute bottom-3 left-3 right-3 text-left z-10">
-                      <h3 className="text-sm font-serif-luxury text-white leading-snug group-hover:text-[#c99e64] transition-colors line-clamp-1">
-                        {formatDisplayTitle(item.title, item.category, item.number)}
-                      </h3>
-                      {item.caption && (
-                        <p className="text-[11px] text-[#9ca3af] mt-0.5 line-clamp-1">
-                          {item.caption}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                );
+              })}
             </motion.div>
           </AnimatePresence>
         )}
       </div>
+    )}
+  </div>
 
       {/* ========================================================= */}
       {/* LIGHTBOX MODAL DE VISUALIZAÇÃO AMPLIADA */}
@@ -519,6 +716,80 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({ onContactClick }) 
                   <span>Ver original</span>
                 </a>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* LIGHTBOX MODAL PARA AS FOTOS DO ÁLBUM DE EVENTO           */}
+      {/* ========================================================= */}
+      {albumLightboxIndex !== null && openedAlbum?.photos && (
+        <div
+          onClick={() => setAlbumLightboxIndex(null)}
+          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
+        >
+          {/* Close button */}
+          <button
+            type="button"
+            onClick={() => setAlbumLightboxIndex(null)}
+            className="absolute top-5 right-5 z-20 p-2.5 text-gray-300 hover:text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer shadow-lg"
+            aria-label="Fechar ampliação"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          {/* Navigation buttons */}
+          {openedAlbum.photos.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAlbumLightboxIndex(
+                    (albumLightboxIndex - 1 + openedAlbum.photos!.length) % openedAlbum.photos!.length
+                  );
+                }}
+                className="absolute left-4 top-1/2 -translate-y-1/2 z-20 p-3 text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer shadow-lg"
+                aria-label="Foto anterior"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAlbumLightboxIndex((albumLightboxIndex + 1) % openedAlbum.photos!.length);
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 z-20 p-3 text-white bg-[#1a1d24]/80 hover:bg-[#c99e64] hover:text-black rounded-full transition-all cursor-pointer shadow-lg"
+                aria-label="Próxima foto"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            </>
+          )}
+
+          {/* Image & Caption */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-5xl w-full max-h-[92vh] flex flex-col items-center"
+          >
+            <div className="relative max-h-[75vh] flex items-center justify-center">
+              <img
+                src={openedAlbum.photos[albumLightboxIndex].imageUrl}
+                alt={openedAlbum.photos[albumLightboxIndex].title || openedAlbum.title}
+                className="max-h-[72vh] w-auto max-w-full object-contain rounded-lg shadow-2xl border border-[#262a32]"
+              />
+            </div>
+            <div className="mt-4 text-center max-w-2xl w-full px-4 text-white">
+              <p className="text-[11px] text-[#c99e64] uppercase tracking-widest font-semibold">
+                {openedAlbum.title} • Foto {albumLightboxIndex + 1} de {openedAlbum.photos.length}
+              </p>
+              {openedAlbum.photos[albumLightboxIndex].title && (
+                <h3 className="text-base font-serif-luxury mt-1">
+                  {openedAlbum.photos[albumLightboxIndex].title}
+                </h3>
+              )}
             </div>
           </div>
         </div>

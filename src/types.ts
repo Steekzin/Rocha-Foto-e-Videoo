@@ -144,6 +144,7 @@ export interface PortfolioPhoto {
   aspect?: 'portrait' | 'landscape' | 'square';
   active: boolean;
   featured?: boolean;
+  albumId?: string;
   createdAt: string;
 }
 
@@ -162,5 +163,34 @@ export interface PortfolioItem {
   caption?: string;
   description?: string;
   featured?: boolean;
+  albumId?: string;
   createdAt?: string;
+}
+
+export interface EventAlbumPhoto {
+  id: string;
+  albumId: string;
+  imageUrl: string;
+  thumbnailUrl?: string;
+  title?: string;
+  description?: string;
+  order: number;
+  createdAt: string;
+}
+
+export interface EventAlbum {
+  id: string;
+  title: string;
+  slug: string;
+  category: string;
+  date?: string;
+  description?: string;
+  coverImage: string;
+  photoCount: number;
+  photos?: EventAlbumPhoto[];
+  portfolioPhotoId?: string;
+  active: boolean;
+  featured?: boolean;
+  order: number;
+  createdAt: string;
 }

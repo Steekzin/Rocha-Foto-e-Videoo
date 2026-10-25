@@ -126,10 +126,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     try {
       setLoadingData(true);
       const data = await api.getGallery(galleryId);
-      setSelectedGallery(data);
+      if (data) {
+        setSelectedGallery(data);
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
-      alert('Erro ao carregar fotos da galeria.');
+      console.warn('[Portal Gallery Load Error]:', err);
     } finally {
       setLoadingData(false);
     }

@@ -30,6 +30,7 @@ import {
   MessageCircle,
   Sparkles,
   Database,
+  BookOpen,
 } from 'lucide-react';
 import {
   Client,
@@ -45,6 +46,7 @@ import { api, DashboardStats } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
 import { AdminPortfolioTab } from './AdminPortfolioTab.js';
 import { AdminDatabaseTab } from './AdminDatabaseTab.js';
+import { AdminEventAlbumsTab } from './AdminEventAlbumsTab.js';
 import { supabase } from '../services/supabaseClient.js';
 import { optimizePhotoForWeb } from '../utils/imageOptimizer.js';
 
@@ -63,9 +65,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [authError, setAuthError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Tabs: 'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'database'
+  // Tabs: 'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'event-albums' | 'database'
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'database'
+    'overview' | 'clients' | 'events' | 'galleries' | 'photos' | 'selections' | 'portfolio' | 'event-albums' | 'database'
   >('overview');
 
   // Master Data
@@ -264,9 +266,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     try {
       setSelectedGalleryForPhotos(gallery);
       const data = await api.getGallery(gallery.id);
-      setCurrentGalleryPhotos(data.photos || []);
+      if (data && Array.isArray(data.photos)) {
+        setCurrentGalleryPhotos(data.photos);
+      }
     } catch (err) {
-      alert('Erro ao carregar fotos da galeria');
+      console.warn('[Gallery Photos Load Warning]:', err);
     }
   };
 
@@ -765,6 +769,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           >
             <Sparkles className="w-4 h-4" />
             <span>Portfólio Público</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('event-albums')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-2 ${
+              activeTab === 'event-albums'
+                ? 'bg-[#c99e64] text-[#0c0d0e]'
+                : 'text-[#9ca3af] hover:text-white hover:bg-[#15181f]'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>Álbuns de Eventos</span>
           </button>
 
           <button
@@ -1557,6 +1573,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         {/* 6. PORTFOLIO TAB */}
         {activeTab === 'portfolio' && (
           <AdminPortfolioTab />
+        )}
+
+        {/* 6.5 EVENT ALBUMS TAB */}
+        {activeTab === 'event-albums' && (
+          <AdminEventAlbumsTab />
         )}
 
         {/* 7. SUPABASE DATABASE TAB */}

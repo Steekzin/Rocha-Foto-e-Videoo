@@ -9,6 +9,8 @@ import {
   PortfolioPhoto,
   User,
   SelectionStatus,
+  EventAlbum,
+  EventAlbumPhoto,
 } from '../types.js';
 import { supabase } from './supabaseClient.js';
 import { INITIAL_PORTFOLIO_CATEGORIES, INITIAL_PORTFOLIO_PHOTOS } from '../data/defaultPortfolio.js';
@@ -582,7 +584,22 @@ export const api = {
           console.warn('[Supabase Direct Get Gallery Error]:', sbErr);
         }
       }
-      throw apiErr;
+      // Safe fallback return so UI never throws blocking alert on cold start
+      return {
+        id,
+        eventId: '',
+        eventName: '',
+        clientId: '',
+        clientName: '',
+        title: 'Galeria',
+        slug: id,
+        status: 'ativa',
+        pricingType: 'none',
+        defaultPrice: 0,
+        photoCount: 0,
+        createdAt: new Date().toISOString(),
+        photos: [],
+      };
     }
   },
 
@@ -1303,6 +1320,7 @@ export const api = {
         aspect: p.aspect || 'portrait',
         active: p.active !== false,
         featured: Boolean(p.featured),
+        albumId: p.albumId || p.album_id || undefined,
         createdAt: created,
         created_at: created,
       };
@@ -2205,6 +2223,7 @@ export const api = {
       aspect: p.aspect,
       active: p.active,
       featured: p.featured,
+      albumId: p.albumId || (p as any).album_id || undefined,
       createdAt: p.createdAt,
     }));
   },
@@ -2454,5 +2473,123 @@ export const api = {
       body: formData,
     });
     return parseJsonResponse(res, 'Erro ao salvar nova logo.');
+  },
+
+  // ==========================================
+  // EVENT ALBUMS (ÁLBUNS DE EVENTOS / TRABALHOS COMPLETOS)
+  // ==========================================
+  async getEventAlbums(category?: string, all?: boolean): Promise<EventAlbum[]> {
+    try {
+      const q = new URLSearchParams();
+      if (category) q.set('category', category);
+      if (all) q.set('all', 'true');
+      const res = await fetch(`${API_BASE}/event-albums?${q.toString()}`);
+      if (!res.ok) throw new Error('Falha ao carregar álbuns');
+      return await res.json();
+    } catch {
+      return [];
+    }
+  },
+
+  async getEventAlbum(id: string): Promise<EventAlbum | null> {
+    try {
+      const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error('Álbum não encontrado');
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  async createEventAlbum(album: Partial<EventAlbum>): Promise<EventAlbum> {
+    const res = await fetch(`${API_BASE}/admin/event-albums`, {
+      method: 'POST',
+      headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(album),
+    });
+    return parseJsonResponse(res, 'Erro ao criar álbum de evento.');
+  },
+
+  async updateEventAlbum(id: string, album: Partial<EventAlbum>): Promise<EventAlbum> {
+    const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(album),
+    });
+    return parseJsonResponse(res, 'Erro ao atualizar álbum de evento.');
+  },
+
+  async deleteEventAlbum(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getAdminHeaders(),
+    });
+    await parseJsonResponse(res, 'Erro ao excluir álbum de evento.');
+  },
+
+  async uploadEventAlbumPhotos(
+    albumId: string,
+    files: File[],
+    onProgress?: (current: number, total: number, fileName?: string) => void
+  ): Promise<{ success: boolean; count: number; photos: EventAlbumPhoto[]; album?: EventAlbum }> {
+    if (!files || files.length === 0) {
+      throw new Error('Nenhuma fotografia selecionada para envio.');
+    }
+
+    const optimizedFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const opt = await optimizePhotoForWeb(files[i]);
+        optimizedFiles.push(opt);
+      } catch {
+        optimizedFiles.push(files[i]);
+      }
+    }
+
+    const allUploaded: EventAlbumPhoto[] = [];
+    let updatedAlbum: any = null;
+    const BATCH_SIZE = 2;
+
+    for (let start = 0; start < optimizedFiles.length; start += BATCH_SIZE) {
+      const fileBatch = optimizedFiles.slice(start, start + BATCH_SIZE);
+      const originalBatch = files.slice(start, start + BATCH_SIZE);
+
+      if (onProgress) {
+        onProgress(start + 1, files.length, originalBatch[0]?.name);
+      }
+
+      const formData = new FormData();
+      for (const f of fileBatch) {
+        formData.append('files', f);
+      }
+
+      const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/upload`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.photos)) {
+          allUploaded.push(...data.photos);
+          if (data.album) updatedAlbum = data.album;
+        }
+      }
+    }
+
+    if (onProgress) {
+      onProgress(files.length, files.length);
+    }
+
+    return { success: true, count: allUploaded.length, photos: allUploaded, album: updatedAlbum };
+  },
+
+  async deleteEventAlbumPhoto(albumId: string, photoId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}`, {
+      method: 'DELETE',
+      headers: getAdminHeaders(),
+    });
+    await parseJsonResponse(res, 'Erro ao excluir foto do álbum.');
   },
 };

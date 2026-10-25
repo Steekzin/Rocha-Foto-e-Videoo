@@ -18,6 +18,7 @@ import {
   INITIAL_PORTFOLIO,
   INITIAL_PORTFOLIO_CATEGORIES,
   INITIAL_PORTFOLIO_PHOTOS,
+  INITIAL_EVENT_ALBUMS,
 } from './server/seedData.ts';
 import type {
   Client,
@@ -28,6 +29,8 @@ import type {
   PortfolioItem,
   PortfolioCategory,
   PortfolioPhoto,
+  EventAlbum,
+  EventAlbumPhoto,
   User,
 } from './src/types.ts';
 import {
@@ -110,6 +113,7 @@ interface DatabaseSchema {
   portfolioCategories: PortfolioCategory[];
   portfolioPhotos: PortfolioPhoto[];
   portfolio: PortfolioItem[];
+  eventAlbums: EventAlbum[];
   institutionalPhotos?: {
     perfil?: string;
     cerimonia?: string;
@@ -129,6 +133,7 @@ let db: DatabaseSchema = {
   portfolioCategories: [...INITIAL_PORTFOLIO_CATEGORIES],
   portfolioPhotos: [...INITIAL_PORTFOLIO_PHOTOS],
   portfolio: [...INITIAL_PORTFOLIO],
+  eventAlbums: [...INITIAL_EVENT_ALBUMS],
 };
 
 function toSlug(text: string): string {
@@ -254,6 +259,11 @@ function loadDatabase() {
 
         if (db.portfolioPhotos.length === 0) {
           db.portfolioPhotos = [...INITIAL_PORTFOLIO_PHOTOS];
+          updated = true;
+        }
+
+        if (!Array.isArray(db.eventAlbums) || db.eventAlbums.length === 0) {
+          db.eventAlbums = [...INITIAL_EVENT_ALBUMS];
           updated = true;
         }
 
@@ -667,13 +677,20 @@ async function setupRoutes() {
 
   app.get('/api/galleries/:id', (req: Request, res: Response) => {
     const { id } = req.params;
-    const gallery = db.galleries.find((g) => g.id === id || g.slug === id);
+    let gallery = db.galleries.find((g) => g.id === id || g.slug === id);
+    if (!gallery && db.galleries.length === 0) {
+      loadDatabase();
+      gallery = db.galleries.find((g) => g.id === id || g.slug === id);
+    }
+    if (!gallery) {
+      gallery = INITIAL_GALLERIES.find((g) => g.id === id || g.slug === id);
+    }
     if (!gallery) {
       return res.status(404).json({ error: 'Galeria não encontrada' });
     }
 
     const photos = db.photos
-      .filter((p) => p.galleryId === gallery.id)
+      .filter((p) => p.galleryId === gallery!.id)
       .sort((a, b) => a.order - b.order);
 
     res.json({
@@ -1007,6 +1024,264 @@ async function setupRoutes() {
 
     res.json({ success: true, photos: updated });
   });
+
+  // ==========================================
+  // EVENT ALBUMS (ÁLBUNS DE EVENTOS / TRABALHOS COMPLETOS)
+  // ==========================================
+  app.get('/api/event-albums', (req: Request, res: Response) => {
+    const { category, all } = req.query;
+    let list = Array.isArray(db.eventAlbums) ? db.eventAlbums : [...INITIAL_EVENT_ALBUMS];
+    if (!all) {
+      list = list.filter((a) => a.active !== false);
+    }
+    if (category && category !== 'Todos') {
+      list = list.filter((a) => a.category?.toLowerCase() === String(category).toLowerCase());
+    }
+    const enriched = list.map((a) => ({
+      ...a,
+      photoCount: Array.isArray(a.photos) ? a.photos.length : 0,
+      coverImage: a.coverImage || (a.photos && a.photos[0]?.imageUrl) || '',
+    }));
+    res.json(enriched);
+  });
+
+  app.get('/api/event-albums/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    let album = (db.eventAlbums || []).find((a) => a.id === id || a.slug === id);
+    if (!album) {
+      album = INITIAL_EVENT_ALBUMS.find((a) => a.id === id || a.slug === id);
+    }
+    if (!album) {
+      return res.status(404).json({ error: 'Álbum de evento não encontrado' });
+    }
+    res.json({
+      ...album,
+      photoCount: Array.isArray(album.photos) ? album.photos.length : 0,
+      photos: Array.isArray(album.photos) ? album.photos.sort((a, b) => a.order - b.order) : [],
+    });
+  });
+
+  app.post('/api/admin/event-albums', (req: Request, res: Response) => {
+    const { title, category, date, description, coverImage, active, featured, portfolioPhotoId } = req.body;
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Título do álbum é obrigatório' });
+    }
+
+    const slug = toSlug(title);
+    const newAlbumId = `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    let finalCover = coverImage || '';
+
+    if (portfolioPhotoId) {
+      const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
+      if (pPhoto) {
+        pPhoto.albumId = newAlbumId;
+        if (!finalCover) finalCover = pPhoto.imageUrl;
+      }
+    }
+
+    const newAlbum: EventAlbum = {
+      id: newAlbumId,
+      title: title.trim(),
+      slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
+      category: category || 'Casamentos',
+      date: date || new Date().toISOString().split('T')[0],
+      description: description || '',
+      coverImage: finalCover,
+      photoCount: 0,
+      photos: [],
+      portfolioPhotoId: portfolioPhotoId || undefined,
+      active: active !== false,
+      featured: Boolean(featured),
+      order: (db.eventAlbums?.length || 0) + 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+    db.eventAlbums.unshift(newAlbum);
+    saveDatabase();
+    res.status(201).json(newAlbum);
+  });
+
+  app.put('/api/admin/event-albums/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const idx = (db.eventAlbums || []).findIndex((a) => a.id === id);
+    if (idx === -1) return res.status(404).json({ error: 'Álbum não encontrado' });
+
+    const prevAlbum = db.eventAlbums[idx];
+    const { portfolioPhotoId } = req.body;
+
+    if (portfolioPhotoId !== undefined) {
+      // Clear previous portfolio photos bound to this album
+      db.portfolioPhotos.forEach((p) => {
+        if (p.albumId === id) {
+          p.albumId = undefined;
+        }
+      });
+      // Bind new portfolio photo if selected
+      if (portfolioPhotoId) {
+        const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
+        if (pPhoto) {
+          pPhoto.albumId = id;
+          if (!req.body.coverImage && !prevAlbum.coverImage) {
+            req.body.coverImage = pPhoto.imageUrl;
+          }
+        }
+      }
+    }
+
+    db.eventAlbums[idx] = {
+      ...db.eventAlbums[idx],
+      ...req.body,
+    };
+    saveDatabase();
+    res.json(db.eventAlbums[idx]);
+  });
+
+  app.delete(['/api/admin/event-albums/:id', '/api/event-albums/:id'], (req: Request, res: Response) => {
+    const { id } = req.params;
+    if (!Array.isArray(db.eventAlbums)) {
+      db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
+    }
+    db.eventAlbums = (db.eventAlbums || []).filter((a) => a.id !== id && a.slug !== id);
+
+    // Unlink any portfolio photos tied to this album
+    if (Array.isArray(db.portfolioPhotos)) {
+      db.portfolioPhotos.forEach((p) => {
+        if (p.albumId === id) {
+          p.albumId = undefined;
+        }
+      });
+    }
+
+    saveDatabase();
+    res.json({ success: true });
+  });
+
+  // Multipart upload of photos to an event album
+  app.post(
+    ['/api/admin/event-albums/:id/photos/upload', '/api/event-albums/:id/photos/upload'],
+    upload.array('files', 100) as any,
+    async (req: Request, res: Response) => {
+      try {
+        const { id: albumId } = req.params;
+        const files = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) {
+          return res.status(400).json({ error: 'Nenhuma fotografia enviada.' });
+        }
+
+        let album = (db.eventAlbums || []).find((a) => a.id === albumId);
+        if (!album) {
+          album = INITIAL_EVENT_ALBUMS.find((a) => a.id === albumId);
+          if (album) {
+            if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+            db.eventAlbums.push(album);
+          }
+        }
+        if (!album) {
+          return res.status(404).json({ error: 'Álbum não encontrado' });
+        }
+
+        if (!Array.isArray(album.photos)) {
+          album.photos = [];
+        }
+
+        let nextOrder = album.photos.length > 0 ? Math.max(...album.photos.map((p) => p.order)) + 1 : 1;
+        const addedPhotos: EventAlbumPhoto[] = [];
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const photoOrder = nextOrder++;
+          const cleanName = (file.originalname || `foto_${photoOrder}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+          let photoUrl = '';
+
+          // 1. Try Supabase Storage first if configured
+          if (isSupabaseConfigured()) {
+            try {
+              const storagePath = `event-albums/${album.id}/${Date.now()}_${i}_${cleanName}`;
+              const uploadedUrl = await uploadToSupabaseStorage(
+                'portfolio',
+                storagePath,
+                file.buffer,
+                file.mimetype || 'image/jpeg'
+              );
+              if (uploadedUrl) {
+                photoUrl = uploadedUrl;
+              }
+            } catch (sbErr) {
+              console.warn('[Supabase Event Album Storage Warning]:', sbErr);
+            }
+          }
+
+          // 2. Local disk fallback
+          if (!photoUrl) {
+            try {
+              const albumDir = isServerless ? path.join('/tmp', 'event-albums', album.id) : path.join(process.cwd(), 'public', 'event-albums', album.id);
+              if (!fs.existsSync(albumDir)) {
+                fs.mkdirSync(albumDir, { recursive: true });
+              }
+              const localFileName = `${Date.now()}_${i}_${cleanName}`;
+              const targetFilePath = path.join(albumDir, localFileName);
+              fs.writeFileSync(targetFilePath, file.buffer);
+              photoUrl = `/event-albums/${album.id}/${localFileName}`;
+            } catch (diskErr) {
+              photoUrl = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
+            }
+          }
+
+          const newPhoto: EventAlbumPhoto = {
+            id: `eap-${Date.now()}-${i}-${Math.floor(Math.random() * 10000)}`,
+            albumId: album.id,
+            imageUrl: photoUrl,
+            title: (file.originalname || '').replace(/\.[^/.]+$/, ''),
+            order: photoOrder,
+            createdAt: new Date().toISOString(),
+          };
+
+          album.photos.push(newPhoto);
+          addedPhotos.push(newPhoto);
+        }
+
+        if (!album.coverImage && addedPhotos[0]?.imageUrl) {
+          album.coverImage = addedPhotos[0].imageUrl;
+        }
+        album.photoCount = album.photos.length;
+
+        saveDatabase();
+        res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos, album });
+      } catch (err: any) {
+        console.error('[Event Album Multipart Upload Error]:', err);
+        res.status(500).json({ error: 'Erro ao fazer upload das fotos do álbum: ' + (err.message || String(err)) });
+      }
+    }
+  );
+
+  app.delete(
+    ['/api/admin/event-albums/:albumId/photos/:photoId', '/api/event-albums/:albumId/photos/:photoId'],
+    (req: Request, res: Response) => {
+      const { albumId, photoId } = req.params;
+      if (!Array.isArray(db.eventAlbums)) {
+        db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
+      }
+      let album = db.eventAlbums.find((a) => a.id === albumId || a.slug === albumId);
+      if (!album) {
+        const init = INITIAL_EVENT_ALBUMS.find((a) => a.id === albumId || a.slug === albumId);
+        if (init) {
+          const clone = JSON.parse(JSON.stringify(init));
+          db.eventAlbums.push(clone);
+          album = clone;
+        }
+      }
+      if (!album) return res.status(404).json({ error: 'Álbum não encontrado' });
+
+      album.photos = (album.photos || []).filter((p) => p.id !== photoId);
+      album.photoCount = album.photos.length;
+      if (album.coverImage && !album.photos.some((p) => p.imageUrl === album.coverImage)) {
+        album.coverImage = album.photos[0]?.imageUrl || '';
+      }
+      saveDatabase();
+      res.json({ success: true, album });
+    }
+  );
 
   // Selections Management (Clients submitting selections & Admin reviewing)
   app.get('/api/selections', (req: Request, res: Response) => {
@@ -2218,6 +2493,7 @@ async function setupRoutes() {
         order: typeof order === 'number' ? order : currentPhoto.order,
         active: active !== undefined ? Boolean(active) : currentPhoto.active,
         featured: featured !== undefined ? Boolean(featured) : currentPhoto.featured,
+        albumId: req.body.albumId !== undefined ? (req.body.albumId || undefined) : currentPhoto.albumId,
       };
 
       db.portfolioPhotos[photoIndex] = updatedPhoto;
