@@ -22,6 +22,7 @@ import {
 import { EventAlbum, EventAlbumPhoto, PortfolioPhoto } from '../types.js';
 import { api } from '../services/api.js';
 import { useTheme } from '../context/ThemeContext.js';
+import { optimizePhotoForWeb } from '../utils/imageOptimizer.js';
 
 export const AdminEventAlbumsTab: React.FC = () => {
   const { theme } = useTheme();
@@ -118,7 +119,7 @@ export const AdminEventAlbumsTab: React.FC = () => {
   const handleLinkPortfolioPhoto = async (albumId: string, photoId?: string) => {
     try {
       setLoading(true);
-      await api.updateEventAlbum(albumId, { portfolioPhotoId: photoId || undefined });
+      await api.updateEventAlbum(albumId, { portfolioPhotoId: photoId || '' });
       setStatusMessage({
         type: 'success',
         text: photoId
@@ -666,8 +667,8 @@ export const AdminEventAlbumsTab: React.FC = () => {
       {/* MODAL: CRIAR OU EDITAR ÁLBUM DE EVENTO */}
       {/* ========================================================= */}
       {showAlbumModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#12151a] border border-[#2b313d] rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#12151a] border border-[#2b313d] rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto">
             <button
               onClick={() => setShowAlbumModal(false)}
               className="absolute top-4 right-4 text-[#9ca3af] hover:text-white"
@@ -822,11 +823,12 @@ export const AdminEventAlbumsTab: React.FC = () => {
                       onChange={async (e) => {
                         const f = e.target.files?.[0];
                         if (f) {
+                          const optimizedCover = await optimizePhotoForWeb(f, 1600, 0.85).catch(() => f);
                           const reader = new FileReader();
                           reader.onload = (ev) => {
                             setAlbumForm((prev) => ({ ...prev, coverImage: (ev.target?.result as string) || '' }));
                           };
-                          reader.readAsDataURL(f);
+                          reader.readAsDataURL(optimizedCover);
                         }
                       }}
                     />

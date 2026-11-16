@@ -1493,3 +1493,56 @@ export async function deleteEventAlbumFromSupabase(albumId: string): Promise<voi
   }
 }
 
+export async function createEventAlbumSignedUploadUrls(
+  albumId: string,
+  files: Array<{ fileName: string; contentType?: string }>
+): Promise<{
+  configured: boolean;
+  uploads: Array<{
+    path: string;
+    signedUrl: string;
+    token: string;
+    publicUrl: string;
+    contentType: string;
+  }>;
+}> {
+  const client = getSupabase();
+  if (!client) {
+    return { configured: false, uploads: [] };
+  }
+
+  const uploads: Array<{
+    path: string;
+    signedUrl: string;
+    token: string;
+    publicUrl: string;
+    contentType: string;
+  }> = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const cleanName = (f.fileName || `foto_${i + 1}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `event-albums/${albumId}/${Date.now()}_${i}_${Math.floor(Math.random() * 1000000)}_${cleanName}`;
+
+    const { data, error } = await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .createSignedUploadUrl(storagePath);
+
+    if (error || !data?.signedUrl) {
+      throw new Error(error?.message || `Falha ao gerar URL assinada para ${cleanName}`);
+    }
+
+    const { data: pub } = client.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);
+    uploads.push({
+      path: data.path || storagePath,
+      signedUrl: data.signedUrl,
+      token: data.token,
+      publicUrl: pub?.publicUrl || '',
+      contentType: f.contentType || 'image/jpeg',
+    });
+  }
+
+  return { configured: true, uploads };
+}
+
+

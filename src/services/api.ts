@@ -2818,7 +2818,7 @@ export const api = {
       fetchEventAlbumsFromSupabaseCloud().catch(() => null),
       (async () => {
         try {
-          const res = await fetch(`${API_BASE}/event-albums?all=true`);
+          const res = await fetch(`${API_BASE}/event-albums?all=true`, { cache: 'no-store' });
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data)) return data as EventAlbum[];
@@ -2832,6 +2832,13 @@ export const api = {
 
     const deletedSet = new Set<string>(cloudResult?.deletedIds || []);
     const cloudMap = new Map<string, EventAlbum>();
+    const apiMap = new Map<string, EventAlbum>();
+
+    apiAlbums.forEach((a) => {
+      if (a && a.id && !deletedSet.has(a.id)) {
+        apiMap.set(a.id, a);
+      }
+    });
 
     if (cloudResult && Array.isArray(cloudResult.albums)) {
       cloudResult.albums.forEach((a) => {
@@ -2841,51 +2848,130 @@ export const api = {
       });
     }
 
-    // One-time auto-migration: Rescue any existing albums saved locally in this browser (e.g. from Vercel localStorage fallback)
+    // One-time auto-migration: Rescue any existing albums saved ONLY locally in this browser
     const rawLocalAlbums = getRawStoredClientEventAlbums();
     const localAlbumsToMigrate = rawLocalAlbums.filter((localAlbum) => {
       if (!localAlbum || !localAlbum.id) return false;
       if (deletedSet.has(localAlbum.id)) return false;
-      if (cloudMap.has(localAlbum.id)) return false;
+      if (cloudMap.has(localAlbum.id) || apiMap.has(localAlbum.id)) return false;
       return isLocalAlbumModifiedOrCustom(localAlbum);
     });
 
-    if (localAlbumsToMigrate.length > 0 && supabase) {
+    if (localAlbumsToMigrate.length > 0) {
       await Promise.all(
         localAlbumsToMigrate.map(async (localAlbum) => {
           try {
-            const savedCloud = await saveEventAlbumToSupabaseCloud(localAlbum);
-            cloudMap.set(savedCloud.id, savedCloud);
-            // Best-effort sync to server too
-            fetch(`${API_BASE}/admin/event-albums`, {
+            // Prepare album so payload stays under Vercel 4.5MB limit if it contains base64 photos
+            const preparedAlbum: EventAlbum = {
+              ...localAlbum,
+              photos: Array.isArray(localAlbum.photos) ? localAlbum.photos.map((p) => ({ ...p })) : [],
+            };
+
+            const dataPhotos: Array<{ index: number; blob: Blob; contentType: string; ext: string }> = [];
+            if (preparedAlbum.coverImage?.startsWith('data:')) {
+              const parsed = dataUrlToBlobClient(preparedAlbum.coverImage);
+              if (parsed) {
+                try {
+                  const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(preparedAlbum.id)}/signed-upload-urls`, {
+                    method: 'POST',
+                    headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: [{ fileName: `cover.${parsed.ext}`, contentType: parsed.contentType }] }),
+                  });
+                  if (sigRes.ok) {
+                    const sigData = await sigRes.json();
+                    const target = sigData?.uploads?.[0];
+                    if (sigData?.configured && target?.signedUrl) {
+                      const putOk = await fetch(target.signedUrl, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': parsed.contentType },
+                        body: parsed.blob,
+                      });
+                      if (putOk.ok && target.publicUrl) {
+                        preparedAlbum.coverImage = target.publicUrl;
+                      }
+                    }
+                  }
+                } catch {}
+              }
+            }
+
+            preparedAlbum.photos?.forEach((ph, idx) => {
+              if (ph.imageUrl?.startsWith('data:')) {
+                const parsed = dataUrlToBlobClient(ph.imageUrl);
+                if (parsed) {
+                  dataPhotos.push({ index: idx, ...parsed });
+                }
+              }
+            });
+
+            if (dataPhotos.length > 0) {
+              try {
+                const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(preparedAlbum.id)}/signed-upload-urls`, {
+                  method: 'POST',
+                  headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    files: dataPhotos.map((d) => ({ fileName: `photo_${d.index}.${d.ext}`, contentType: d.contentType })),
+                  }),
+                });
+                if (sigRes.ok) {
+                  const sigData = await sigRes.json();
+                  if (sigData?.configured && Array.isArray(sigData.uploads)) {
+                    for (let k = 0; k < dataPhotos.length; k++) {
+                      const d = dataPhotos[k];
+                      const target = sigData.uploads[k];
+                      if (!target?.signedUrl) continue;
+                      const putRes = await fetch(target.signedUrl, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': d.contentType },
+                        body: d.blob,
+                      });
+                      if (putRes.ok && target.publicUrl && preparedAlbum.photos) {
+                        preparedAlbum.photos[d.index].imageUrl = target.publicUrl;
+                        preparedAlbum.photos[d.index].thumbnailUrl = target.publicUrl;
+                      }
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            // Save album via Server API (bypasses Supabase RLS)
+            const res = await fetch(`${API_BASE}/admin/event-albums`, {
               method: 'POST',
               headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-              body: JSON.stringify(savedCloud),
-            }).catch(() => {});
+              body: JSON.stringify(preparedAlbum),
+            });
+            if (res.ok) {
+              const saved = (await res.json()) as EventAlbum;
+              apiMap.set(saved.id, saved);
+              return;
+            }
           } catch (migErr: any) {
-            console.warn('[Event Albums] Falha ao migrar álbum local para nuvem:', migErr?.message);
-            cloudMap.set(localAlbum.id, localAlbum);
+            console.warn('[Event Albums] Falha ao migrar álbum local para servidor:', migErr?.message);
           }
+
+          // Fallback to browser cache / direct cloud only if server was unreachable
+          if (supabase) {
+            try {
+              const savedCloud = await saveEventAlbumToSupabaseCloud(localAlbum);
+              cloudMap.set(savedCloud.id, savedCloud);
+              return;
+            } catch {}
+          }
+          apiMap.set(localAlbum.id, localAlbum);
         })
       );
-    } else {
-      // If Supabase client is unavailable, keep non-deleted local custom albums in memory/merge
-      rawLocalAlbums.forEach((localAlbum) => {
-        if (localAlbum?.id && !deletedSet.has(localAlbum.id) && !cloudMap.has(localAlbum.id) && isLocalAlbumModifiedOrCustom(localAlbum)) {
-          cloudMap.set(localAlbum.id, localAlbum);
-        }
-      });
     }
 
-    // Merge server API albums (avoiding deleted ones; cloudMap takes priority)
+    // Merge server API albums and cloud albums (API and cloud both read the same Supabase source; prefer whichever exists)
     const mergedMap = new Map<string, EventAlbum>();
-    apiAlbums.forEach((a) => {
-      if (a && a.id && !deletedSet.has(a.id)) {
-        mergedMap.set(a.id, a);
-      }
+    apiMap.forEach((a, id) => {
+      mergedMap.set(id, a);
     });
     cloudMap.forEach((a, id) => {
-      mergedMap.set(id, a);
+      if (!mergedMap.has(id)) {
+        mergedMap.set(id, a);
+      }
     });
 
     // Include seed albums ONLY if not deleted and not overridden
@@ -2919,18 +3005,18 @@ export const api = {
   },
 
   async getEventAlbum(id: string): Promise<EventAlbum | null> {
-    const [cloudAlbum, apiAlbum] = await Promise.all([
-      fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null),
+    const [apiAlbum, cloudAlbum] = await Promise.all([
       (async () => {
         try {
-          const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(id)}`);
+          const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(id)}`, { cache: 'no-store' });
           if (res.ok) return (await res.json()) as EventAlbum;
         } catch {}
         return null;
       })(),
+      fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null),
     ]);
 
-    const resolved = cloudAlbum || apiAlbum;
+    const resolved = apiAlbum || cloudAlbum;
     if (resolved) {
       const local = getRawStoredClientEventAlbums().filter((a) => a.id !== resolved.id);
       local.unshift(resolved);
@@ -2951,16 +3037,30 @@ export const api = {
     const newId = album.id || `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
     let preparedCover = album.coverImage || '';
-    if (preparedCover && preparedCover.startsWith('data:') && supabase) {
+    if (preparedCover && preparedCover.startsWith('data:')) {
       const parsed = dataUrlToBlobClient(preparedCover);
       if (parsed) {
-        const uploadedUrl = await uploadEventAlbumAssetToSupabase(
-          newId,
-          parsed.blob,
-          `cover.${parsed.ext}`,
-          parsed.contentType
-        );
-        if (uploadedUrl) preparedCover = uploadedUrl;
+        try {
+          const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(newId)}/signed-upload-urls`, {
+            method: 'POST',
+            headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ fileName: `cover.${parsed.ext}`, contentType: parsed.contentType }] }),
+          });
+          if (sigRes.ok) {
+            const sigData = await sigRes.json();
+            const target = sigData?.uploads?.[0];
+            if (sigData?.configured && target?.signedUrl) {
+              const putRes = await fetch(target.signedUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': parsed.contentType },
+                body: parsed.blob,
+              });
+              if (putRes.ok && target.publicUrl) {
+                preparedCover = target.publicUrl;
+              }
+            }
+          }
+        } catch {}
       }
     }
 
@@ -2981,7 +3081,8 @@ export const api = {
       createdAt: album.createdAt || new Date().toISOString(),
     };
 
-    // 1. Try Backend API first (send prepared album including deterministic id & uploaded cover URL)
+    // 1. Primary path: Save via Server API (bypasses Supabase RLS cleanly)
+    let backendError: Error | null = null;
     try {
       const res = await fetch(`${API_BASE}/admin/event-albums`, {
         method: 'POST',
@@ -2990,41 +3091,61 @@ export const api = {
       });
       const created = await parseJsonResponse<EventAlbum>(res, 'Erro ao criar álbum de evento.');
       if (created && created.id) {
-        // Ensure it exists in Supabase Storage cloud (no-op if backend already wrote it, or rescues if backend didn't have Supabase)
-        const synced = supabase ? await saveEventAlbumToSupabaseCloud(created).catch(() => created) : created;
-        const local = getClientEventAlbums().filter((a) => a.id !== synced.id);
-        local.unshift(synced);
+        const local = getClientEventAlbums().filter((a) => a.id !== created.id);
+        local.unshift(created);
         saveClientEventAlbums(local);
-        return synced;
+        return created;
       }
     } catch (apiErr: any) {
-      console.warn('[Event Album] Backend falhou ou retornou erro (salvando diretamente no Supabase):', apiErr.message);
+      backendError = apiErr instanceof Error ? apiErr : new Error(String(apiErr));
+      console.warn('[Event Album] Backend POST falhou:', backendError.message);
     }
 
-    // 2. Direct Supabase Storage Cloud fallback (works on Vercel even if API serverless route fails)
-    const savedAlbum = await saveEventAlbumToSupabaseCloud(newAlbum).catch(() => newAlbum);
-    const local = getClientEventAlbums().filter((a) => a.id !== savedAlbum.id);
-    local.unshift(savedAlbum);
-    saveClientEventAlbums(local);
-    return savedAlbum;
+    // 2. Fallback only if server was unreachable (try direct cloud if permitted, else surface error)
+    if (supabase) {
+      try {
+        const savedAlbum = await saveEventAlbumToSupabaseCloud(newAlbum);
+        const local = getClientEventAlbums().filter((a) => a.id !== savedAlbum.id);
+        local.unshift(savedAlbum);
+        saveClientEventAlbums(local);
+        return savedAlbum;
+      } catch {}
+    }
+
+    throw backendError || new Error('Não foi possível criar o álbum de evento.');
   },
 
   async updateEventAlbum(id: string, updates: Partial<EventAlbum>): Promise<EventAlbum> {
     const cleanUpdates: Partial<EventAlbum> = { ...updates };
-    if (cleanUpdates.coverImage && cleanUpdates.coverImage.startsWith('data:') && supabase) {
+    if (cleanUpdates.coverImage && cleanUpdates.coverImage.startsWith('data:')) {
       const parsed = dataUrlToBlobClient(cleanUpdates.coverImage);
       if (parsed) {
-        const uploadedUrl = await uploadEventAlbumAssetToSupabase(
-          id,
-          parsed.blob,
-          `cover.${parsed.ext}`,
-          parsed.contentType
-        );
-        if (uploadedUrl) cleanUpdates.coverImage = uploadedUrl;
+        try {
+          const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}/signed-upload-urls`, {
+            method: 'POST',
+            headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ fileName: `cover.${parsed.ext}`, contentType: parsed.contentType }] }),
+          });
+          if (sigRes.ok) {
+            const sigData = await sigRes.json();
+            const target = sigData?.uploads?.[0];
+            if (sigData?.configured && target?.signedUrl) {
+              const putRes = await fetch(target.signedUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': parsed.contentType },
+                body: parsed.blob,
+              });
+              if (putRes.ok && target.publicUrl) {
+                cleanUpdates.coverImage = target.publicUrl;
+              }
+            }
+          }
+        } catch {}
       }
     }
 
-    // 1. Try Backend API
+    // 1. Primary path: Save via Server API (bypasses Supabase RLS cleanly)
+    let backendError: Error | null = null;
     try {
       const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}`, {
         method: 'PUT',
@@ -3033,72 +3154,68 @@ export const api = {
       });
       const updated = await parseJsonResponse<EventAlbum>(res, 'Erro ao atualizar álbum de evento.');
       if (updated && updated.id) {
-        const synced = supabase ? await saveEventAlbumToSupabaseCloud(updated).catch(() => updated) : updated;
         const local = getClientEventAlbums();
-        const idx = local.findIndex((a) => a.id === id);
-        if (idx !== -1) local[idx] = { ...local[idx], ...synced };
-        else local.unshift(synced);
+        const idx = local.findIndex((a) => a.id === updated.id);
+        if (idx !== -1) local[idx] = { ...local[idx], ...updated };
+        else local.unshift(updated);
         saveClientEventAlbums(local);
-        return synced;
+        return updated;
       }
     } catch (apiErr: any) {
-      console.warn('[Event Album] Backend PUT falhou (salvando diretamente no Supabase):', apiErr.message);
+      backendError = apiErr instanceof Error ? apiErr : new Error(String(apiErr));
+      console.warn('[Event Album] Backend PUT falhou:', backendError.message);
     }
 
-    // 2. Direct Supabase Cloud + LocalStorage Fallback
-    const existing =
-      (await fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null)) ||
-      getClientEventAlbums().find((a) => a.id === id || a.slug === id);
-
-    const mergedAlbum: EventAlbum = existing
-      ? {
-          ...existing,
-          ...cleanUpdates,
-          id: existing.id,
-          photos: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos : (existing.photos || []),
+    // 2. Fallback only if server was unreachable
+    if (supabase) {
+      try {
+        const existing =
+          (await fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null)) ||
+          getClientEventAlbums().find((a) => a.id === id || a.slug === id);
+        if (existing) {
+          const mergedAlbum: EventAlbum = {
+            ...existing,
+            ...cleanUpdates,
+            id: existing.id,
+            photos: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos : (existing.photos || []),
+          };
+          mergedAlbum.photoCount = mergedAlbum.photos?.length || 0;
+          const saved = await saveEventAlbumToSupabaseCloud(mergedAlbum);
+          const local = getClientEventAlbums();
+          const idx = local.findIndex((a) => a.id === saved.id);
+          if (idx !== -1) local[idx] = saved;
+          else local.unshift(saved);
+          saveClientEventAlbums(local);
+          return saved;
         }
-      : {
-          id,
-          title: cleanUpdates.title || 'Álbum',
-          slug: cleanUpdates.slug || id,
-          category: cleanUpdates.category || 'Casamentos',
-          date: cleanUpdates.date || new Date().toISOString().split('T')[0],
-          description: cleanUpdates.description || '',
-          coverImage: cleanUpdates.coverImage || '',
-          photoCount: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos.length : Number(cleanUpdates.photoCount || 0),
-          photos: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos : [],
-          portfolioPhotoId: cleanUpdates.portfolioPhotoId,
-          active: cleanUpdates.active !== false,
-          featured: Boolean(cleanUpdates.featured),
-          order: cleanUpdates.order || 1,
-          createdAt: cleanUpdates.createdAt || new Date().toISOString(),
-        };
+      } catch {}
+    }
 
-    mergedAlbum.photoCount = Array.isArray(mergedAlbum.photos) ? mergedAlbum.photos.length : 0;
-
-    const saved = await saveEventAlbumToSupabaseCloud(mergedAlbum).catch(() => mergedAlbum);
-    const local = getClientEventAlbums();
-    const idx = local.findIndex((a) => a.id === saved.id);
-    if (idx !== -1) local[idx] = saved;
-    else local.unshift(saved);
-    saveClientEventAlbums(local);
-    return saved;
+    throw backendError || new Error('Não foi possível atualizar o álbum de evento.');
   },
 
   async deleteEventAlbum(id: string): Promise<void> {
-    // 1. Try Backend API
+    let backendSucceeded = false;
+    let backendError: Error | null = null;
+
+    // 1. Primary path: Delete via Server API (bypasses Supabase RLS)
     try {
       const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: getAdminHeaders(),
       });
       await parseJsonResponse(res, 'Erro ao excluir álbum de evento.');
+      backendSucceeded = true;
     } catch (err: any) {
-      console.warn('[Event Album] Backend DELETE falhou (executando exclusão direta no Supabase):', err.message);
+      backendError = err instanceof Error ? err : new Error(String(err));
+      console.warn('[Event Album] Backend DELETE falhou:', backendError.message);
     }
 
-    // 2. Always delete from Supabase Storage & update tombstone + LocalStorage
-    await deleteEventAlbumFromSupabaseCloud(id);
+    if (!backendSucceeded) {
+      await deleteEventAlbumFromSupabaseCloud(id);
+      if (backendError && !supabase) throw backendError;
+    }
+
     const local = getClientEventAlbums().filter((a) => a.id !== id && a.slug !== id);
     saveClientEventAlbums(local);
   },
@@ -3124,59 +3241,103 @@ export const api = {
       onProgress(0, total, files[0]?.name);
     }
 
-    // 1. Direct-to-Supabase Storage pipeline (no 4.5MB Vercel limit, no 10s serverless timeout, works for 8, 30, 100+ photos!)
-    if (supabase) {
-      const existingAlbum =
-        (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
-        (await (async () => {
-          try {
-            const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(albumId)}`);
-            if (res.ok) return (await res.json()) as EventAlbum;
-          } catch {}
-          return null;
-        })()) ||
-        getClientEventAlbums().find((a) => a.id === albumId);
+    // 1. Best-in-class pipeline: Request Signed Upload URLs from server (bypasses RLS) ->
+    //    Upload optimized photos straight from browser to Supabase Storage (bypasses Vercel 4.5MB & 10s limits) ->
+    //    Register photo URLs atomically via lightweight JSON API call (bypasses RLS)
+    let signedSlots: Array<{
+      path: string;
+      signedUrl: string;
+      token: string;
+      publicUrl: string;
+      contentType: string;
+    }> | null = null;
+    let serverHasSupabase = true;
 
-      if (!existingAlbum) {
-        throw new Error('Álbum não encontrado para adicionar as fotografias.');
+    try {
+      const collectedSlots: Array<{
+        path: string;
+        signedUrl: string;
+        token: string;
+        publicUrl: string;
+        contentType: string;
+      }> = [];
+      const URL_CHUNK = 50;
+      for (let start = 0; start < total; start += URL_CHUNK) {
+        const chunk = files.slice(start, start + URL_CHUNK);
+        const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/signed-upload-urls`, {
+          method: 'POST',
+          headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: chunk.map((f) => ({
+              fileName: f.name.replace(/\.[^/.]+$/, '') + '.jpg',
+              contentType: 'image/jpeg',
+            })),
+          }),
+        });
+        const sigData = await parseJsonResponse<{
+          configured: boolean;
+          uploads: Array<{ path: string; signedUrl: string; token: string; publicUrl: string; contentType: string }>;
+        }>(sigRes, 'Erro ao preparar upload de fotos.');
+        if (!sigData.configured) {
+          serverHasSupabase = false;
+          break;
+        }
+        if (Array.isArray(sigData.uploads)) {
+          collectedSlots.push(...sigData.uploads);
+        }
       }
+      if (serverHasSupabase && collectedSlots.length === total) {
+        signedSlots = collectedSlots;
+      }
+    } catch (sigErr: any) {
+      console.warn('[Event Album] Não foi possível obter URLs assinadas, tentando fallback:', sigErr?.message);
+    }
 
-      const basePhotos: EventAlbumPhoto[] = Array.isArray(existingAlbum.photos) ? [...existingAlbum.photos] : [];
-      const baseOrder = basePhotos.length > 0 ? Math.max(...basePhotos.map((p) => Number(p.order || 0))) : 0;
+    if (signedSlots && signedSlots.length === total) {
+      const existingAlbum = await this.getEventAlbum(albumId).catch(() => null);
+      const baseOrder = existingAlbum?.photos?.length
+        ? Math.max(...existingAlbum.photos.map((p) => Number(p.order || 0)))
+        : 0;
 
       const uploadedSlots: Array<EventAlbumPhoto | null> = new Array(total).fill(null);
       const failedFiles: string[] = [];
       let completedCount = 0;
       let nextIndex = 0;
-      let lastCheckpointSavedCount = 0;
-      let checkpointChain: Promise<void> = Promise.resolve();
-      let latestSavedAlbum: EventAlbum = existingAlbum;
+      let registerChain: Promise<void> = Promise.resolve();
+      let latestAlbum: EventAlbum | undefined = existingAlbum || undefined;
+      const sentIds = new Set<string>();
 
-      const persistCheckpoint = (force: boolean = false) => {
-        checkpointChain = checkpointChain.then(async () => {
-          const readyPhotos = uploadedSlots.filter((p): p is EventAlbumPhoto => p !== null);
-          if (!force && readyPhotos.length - lastCheckpointSavedCount < 10) {
-            return;
+      const flushRegisteredPhotos = (force: boolean = false) => {
+        registerChain = registerChain.then(async () => {
+          const toSend = uploadedSlots.filter(
+            (p): p is EventAlbumPhoto => p !== null && !sentIds.has(p.id)
+          );
+          if (toSend.length === 0) return;
+          if (!force && toSend.length < 10) return;
+
+          const regRes = await fetch(
+            `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/register`,
+            {
+              method: 'POST',
+              headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ photos: toSend }),
+            }
+          );
+          const regData = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(
+            regRes,
+            'Erro ao registrar fotos no álbum.'
+          );
+          toSend.forEach((p) => sentIds.add(p.id));
+          if (regData?.album) {
+            latestAlbum = regData.album;
+            const local = getClientEventAlbums();
+            const idx = local.findIndex((a) => a.id === albumId);
+            if (idx !== -1) local[idx] = latestAlbum;
+            else local.unshift(latestAlbum);
+            saveClientEventAlbums(local);
           }
-          if (readyPhotos.length === 0 || readyPhotos.length === lastCheckpointSavedCount) return;
-
-          const mergedPhotos = [...basePhotos, ...readyPhotos];
-          const albumSnapshot: EventAlbum = {
-            ...existingAlbum,
-            photos: mergedPhotos,
-            photoCount: mergedPhotos.length,
-            coverImage: existingAlbum.coverImage || mergedPhotos[0]?.imageUrl || '',
-          };
-          latestSavedAlbum = await saveEventAlbumToSupabaseCloud(albumSnapshot);
-          lastCheckpointSavedCount = readyPhotos.length;
-
-          const local = getClientEventAlbums();
-          const idx = local.findIndex((a) => a.id === albumId);
-          if (idx !== -1) local[idx] = latestSavedAlbum;
-          else local.unshift(latestSavedAlbum);
-          saveClientEventAlbums(local);
         });
-        return checkpointChain;
+        return registerChain;
       };
 
       const CONCURRENCY = 2;
@@ -3186,6 +3347,7 @@ export const api = {
           if (i >= total) break;
 
           const originalFile = files[i];
+          const targetSlot = signedSlots![i];
           if (onProgress) {
             onProgress(completedCount, total, originalFile.name);
           }
@@ -3197,20 +3359,31 @@ export const api = {
             fileToUpload = originalFile;
           }
 
-          const photoUrl = await uploadEventAlbumAssetToSupabase(
-            albumId,
-            fileToUpload,
-            fileToUpload.name || originalFile.name,
-            fileToUpload.type || originalFile.type || 'image/jpeg',
-            3
-          );
+          let uploadOk = false;
+          const mime = fileToUpload.type || targetSlot.contentType || 'image/jpeg';
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              const putRes = await fetch(targetSlot.signedUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': mime },
+                body: fileToUpload,
+              });
+              if (putRes.ok) {
+                uploadOk = true;
+                break;
+              }
+            } catch {}
+            if (attempt < 3) {
+              await new Promise((r) => setTimeout(r, 500 * attempt));
+            }
+          }
 
-          if (photoUrl) {
+          if (uploadOk && targetSlot.publicUrl) {
             uploadedSlots[i] = {
               id: `eap-${Date.now()}-${i}-${Math.floor(Math.random() * 100000)}`,
               albumId,
-              imageUrl: photoUrl,
-              thumbnailUrl: photoUrl,
+              imageUrl: targetSlot.publicUrl,
+              thumbnailUrl: targetSlot.publicUrl,
               title: (originalFile.name || `Foto ${i + 1}`).replace(/\.[^/.]+$/, ''),
               order: baseOrder + i + 1,
               createdAt: new Date().toISOString(),
@@ -3224,34 +3397,25 @@ export const api = {
             onProgress(completedCount, total, originalFile.name);
           }
 
-          // Save checkpoint every 10 uploaded photos so large batches never lose progress
-          const readyCount = uploadedSlots.filter(Boolean).length;
-          if (readyCount - lastCheckpointSavedCount >= 10) {
-            await persistCheckpoint(false);
+          const unsentReadyCount = uploadedSlots.filter((p) => p !== null && !sentIds.has(p.id)).length;
+          if (unsentReadyCount >= 10) {
+            await flushRegisteredPhotos(false);
           }
         }
       };
 
-      const workerCount = Math.min(CONCURRENCY, total);
-      await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
-      await checkpointChain;
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => runWorker()));
+      await registerChain;
 
       const allUploaded = uploadedSlots.filter((p): p is EventAlbumPhoto => p !== null);
       if (allUploaded.length === 0) {
         throw new Error(
-          'Não foi possível enviar as fotos para o armazenamento na nuvem. Verifique sua conexão e tente novamente.'
+          'Não foi possível enviar as fotografias para o armazenamento na nuvem. Verifique sua conexão e tente novamente.'
         );
       }
 
-      // Final save (must throw if metadata save fails, never swallow errors)
-      await persistCheckpoint(true);
-
-      // Best-effort sync of lightweight JSON metadata to backend server
-      fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}`, {
-        method: 'PUT',
-        headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(latestSavedAlbum),
-      }).catch(() => {});
+      // Final flush so all uploaded photos are persisted in Supabase via server (no RLS issues)
+      await flushRegisteredPhotos(true);
 
       if (onProgress) {
         onProgress(total, total);
@@ -3263,11 +3427,11 @@ export const api = {
         failedCount: failedFiles.length,
         failedFiles,
         photos: allUploaded,
-        album: latestSavedAlbum,
+        album: latestAlbum,
       };
     }
 
-    // 2. Fallback only when Supabase client is not configured (local server disk mode)
+    // 2. Fallback: Server multipart upload in micro-batches of 2 (used when Supabase is not configured / local mode)
     const allUploaded: EventAlbumPhoto[] = [];
     const failedFiles: string[] = [];
     let updatedAlbum: EventAlbum | undefined = undefined;
@@ -3335,8 +3499,9 @@ export const api = {
 
   async deleteEventAlbumPhoto(albumId: string, photoId: string): Promise<void> {
     let backendAlbum: EventAlbum | null = null;
+    let backendError: Error | null = null;
 
-    // 1. Try Backend DELETE
+    // 1. Primary path: Delete via Server API (bypasses Supabase RLS)
     try {
       const res = await fetch(
         `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}`,
@@ -3350,22 +3515,30 @@ export const api = {
         backendAlbum = data.album;
       }
     } catch (err: any) {
-      console.warn('[Event Album Photo] Backend DELETE falhou (atualizando Supabase diretamente):', err.message);
+      backendError = err instanceof Error ? err : new Error(String(err));
+      console.warn('[Event Album Photo] Backend DELETE falhou:', backendError.message);
     }
 
-    // 2. Ensure deletion is persisted in Supabase Cloud and LocalStorage
-    const sourceAlbum =
-      backendAlbum ||
-      (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
-      getClientEventAlbums().find((a) => a.id === albumId);
+    if (backendAlbum) {
+      const local = getClientEventAlbums();
+      const idx = local.findIndex((a) => a.id === albumId);
+      if (idx !== -1) local[idx] = backendAlbum;
+      else local.unshift(backendAlbum);
+      saveClientEventAlbums(local);
+      return;
+    }
 
-    if (sourceAlbum) {
-      let albumToSync = sourceAlbum;
-      if (!backendAlbum) {
+    // 2. Fallback only if server was unreachable
+    if (supabase) {
+      const sourceAlbum =
+        (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
+        getClientEventAlbums().find((a) => a.id === albumId);
+
+      if (sourceAlbum) {
         const currentPhotos = sourceAlbum.photos || [];
         const deletedPhoto = currentPhotos.find((p) => p.id === photoId);
         const updatedPhotos = currentPhotos.filter((p) => p.id !== photoId);
-        albumToSync = {
+        const albumToSync = await saveEventAlbumToSupabaseCloud({
           ...sourceAlbum,
           photos: updatedPhotos,
           photoCount: updatedPhotos.length,
@@ -3373,15 +3546,16 @@ export const api = {
             deletedPhoto && sourceAlbum.coverImage === deletedPhoto.imageUrl
               ? updatedPhotos[0]?.imageUrl || ''
               : sourceAlbum.coverImage,
-        };
-        albumToSync = await saveEventAlbumToSupabaseCloud(albumToSync).catch(() => albumToSync);
+        });
+        const local = getClientEventAlbums();
+        const idx = local.findIndex((a) => a.id === albumId);
+        if (idx !== -1) local[idx] = albumToSync;
+        else local.unshift(albumToSync);
+        saveClientEventAlbums(local);
+        return;
       }
-
-      const local = getClientEventAlbums();
-      const idx = local.findIndex((a) => a.id === albumId);
-      if (idx !== -1) local[idx] = albumToSync;
-      else local.unshift(albumToSync);
-      saveClientEventAlbums(local);
     }
+
+    throw backendError || new Error('Erro ao excluir foto do álbum.');
   },
 };

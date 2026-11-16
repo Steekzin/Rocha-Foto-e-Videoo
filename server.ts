@@ -70,6 +70,7 @@ import {
   getEventAlbumFromSupabase,
   saveEventAlbumToSupabase,
   deleteEventAlbumFromSupabase,
+  createEventAlbumSignedUploadUrls,
 } from './server/supabase.ts';
 
 // Safe directory resolution for ESM and CJS bundle
@@ -1105,6 +1106,7 @@ async function setupRoutes() {
   };
 
   app.get('/api/event-albums', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     try {
       const { category, all } = req.query;
       const { albums } = await resolveEventAlbumsState();
@@ -1128,6 +1130,7 @@ async function setupRoutes() {
   });
 
   app.get('/api/event-albums/:id', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     try {
       const { id } = req.params;
       const album = await findSingleEventAlbum(id);
@@ -1223,6 +1226,8 @@ async function setupRoutes() {
               bodyUpdates.coverImage = pPhoto.imageUrl;
             }
           }
+        } else {
+          bodyUpdates.portfolioPhotoId = undefined;
         }
       }
 
@@ -1230,6 +1235,10 @@ async function setupRoutes() {
         ...existingAlbum,
         ...bodyUpdates,
         id: existingAlbum.id,
+        portfolioPhotoId:
+          portfolioPhotoId === '' || portfolioPhotoId === null
+            ? undefined
+            : (bodyUpdates.portfolioPhotoId !== undefined ? bodyUpdates.portfolioPhotoId : existingAlbum.portfolioPhotoId),
         photos: Array.isArray(bodyUpdates.photos) ? bodyUpdates.photos : (existingAlbum.photos || []),
       };
       updatedAlbum.photoCount = updatedAlbum.photos?.length || 0;
@@ -1278,6 +1287,97 @@ async function setupRoutes() {
       return res.status(500).json({ error: 'Erro ao excluir álbum de evento: ' + (err.message || String(err)) });
     }
   });
+
+  // Generate Supabase Storage signed upload URLs (bypasses RLS and Vercel 4.5MB limit for unlimited photo uploads)
+  app.post(
+    ['/api/admin/event-albums/:id/signed-upload-urls', '/api/event-albums/:id/signed-upload-urls'],
+    async (req: Request, res: Response) => {
+      try {
+        const { id: albumId } = req.params;
+        const files = Array.isArray(req.body?.files) ? req.body.files : [];
+        if (files.length === 0) {
+          return res.status(400).json({ error: 'Lista de arquivos não informada.' });
+        }
+        if (!isSupabaseConfigured()) {
+          return res.json({ configured: false, uploads: [] });
+        }
+        const result = await createEventAlbumSignedUploadUrls(albumId, files);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('[Event Album Signed URLs Error]:', err);
+        return res.status(500).json({
+          error: 'Erro ao gerar URLs assinadas de upload: ' + (err.message || String(err)),
+        });
+      }
+    }
+  );
+
+  // Atomically register/append uploaded photo URLs to an event album (server bypasses Supabase RLS)
+  app.post(
+    ['/api/admin/event-albums/:id/photos/register', '/api/event-albums/:id/photos/register'],
+    async (req: Request, res: Response) => {
+      try {
+        const { id: albumId } = req.params;
+        const incomingPhotos: EventAlbumPhoto[] = Array.isArray(req.body?.photos) ? req.body.photos : [];
+        if (incomingPhotos.length === 0) {
+          return res.status(400).json({ error: 'Nenhuma fotografia informada para registrar.' });
+        }
+
+        let album = await findSingleEventAlbum(albumId);
+        if (!album) {
+          return res.status(404).json({ error: 'Álbum não encontrado' });
+        }
+
+        const existingPhotos = Array.isArray(album.photos) ? [...album.photos] : [];
+        const existingIds = new Set(existingPhotos.map((p) => String(p.id)));
+        const existingUrls = new Set(existingPhotos.map((p) => String(p.imageUrl)));
+        let nextOrder =
+          existingPhotos.length > 0 ? Math.max(...existingPhotos.map((p) => Number(p.order || 0))) + 1 : 1;
+
+        const newlyAdded: EventAlbumPhoto[] = [];
+        for (const p of incomingPhotos) {
+          if (!p || !p.imageUrl) continue;
+          const pid = String(p.id || `eap-${Date.now()}-${Math.floor(Math.random() * 100000)}`);
+          if (existingIds.has(pid) || existingUrls.has(String(p.imageUrl))) continue;
+          const photoRecord: EventAlbumPhoto = {
+            id: pid,
+            albumId: album.id,
+            imageUrl: p.imageUrl,
+            thumbnailUrl: p.thumbnailUrl || p.imageUrl,
+            title: p.title || `Foto ${nextOrder}`,
+            order: typeof p.order === 'number' && p.order > 0 ? p.order : nextOrder,
+            createdAt: p.createdAt || new Date().toISOString(),
+          };
+          nextOrder = Math.max(nextOrder + 1, photoRecord.order + 1);
+          existingPhotos.push(photoRecord);
+          existingIds.add(pid);
+          existingUrls.add(String(p.imageUrl));
+          newlyAdded.push(photoRecord);
+        }
+
+        album.photos = existingPhotos;
+        album.photoCount = existingPhotos.length;
+        if (!album.coverImage && existingPhotos[0]?.imageUrl) {
+          album.coverImage = existingPhotos[0].imageUrl;
+        }
+
+        if (isSupabaseConfigured()) {
+          album = await saveEventAlbumToSupabase(album);
+        }
+
+        if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+        const idx = db.eventAlbums.findIndex((a) => a.id === album!.id);
+        if (idx !== -1) db.eventAlbums[idx] = album;
+        else db.eventAlbums.unshift(album);
+
+        saveDatabase();
+        return res.status(201).json({ success: true, count: newlyAdded.length, photos: newlyAdded, album });
+      } catch (err: any) {
+        console.error('[Event Album Register Photos Error]:', err);
+        return res.status(500).json({ error: 'Erro ao registrar fotos no álbum: ' + (err.message || String(err)) });
+      }
+    }
+  );
 
   // Multipart upload of photos to an event album
   app.post(
