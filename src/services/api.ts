@@ -150,15 +150,37 @@ function clearClientPortfolioPhotos(): void {
 }
 
 const CLIENT_STORAGE_EVENT_ALBUMS_KEY = 'rocha_event_albums';
+const CLIENT_STORAGE_EVENT_ALBUMS_LEGACY_KEY = 'rocha_cached_event_albums';
+
+const EVENT_ALBUMS_BUCKET = 'portfolio';
+const EVENT_ALBUMS_META_DIR = 'event-albums/meta';
+const EVENT_ALBUMS_DELETED_FILE = 'event-albums/meta/_deleted.json';
+
+function getRawStoredClientEventAlbums(): EventAlbum[] {
+  const combined: EventAlbum[] = [];
+  const seen = new Set<string>();
+  for (const key of [CLIENT_STORAGE_EVENT_ALBUMS_KEY, CLIENT_STORAGE_EVENT_ALBUMS_LEGACY_KEY]) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((a: any) => {
+            if (a && a.id && !seen.has(String(a.id))) {
+              seen.add(String(a.id));
+              combined.push(a);
+            }
+          });
+        }
+      }
+    } catch {}
+  }
+  return combined;
+}
 
 function getClientEventAlbums(): EventAlbum[] {
-  try {
-    const raw = localStorage.getItem(CLIENT_STORAGE_EVENT_ALBUMS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
+  const stored = getRawStoredClientEventAlbums();
+  if (stored.length > 0) return stored;
   return Array.isArray(INITIAL_EVENT_ALBUMS) ? [...INITIAL_EVENT_ALBUMS] : [];
 }
 
@@ -167,6 +189,286 @@ function saveClientEventAlbums(albums: EventAlbum[]): void {
     localStorage.setItem(CLIENT_STORAGE_EVENT_ALBUMS_KEY, JSON.stringify(albums));
   } catch (err) {
     console.warn('LocalStorage limit reached for event albums:', err);
+  }
+}
+
+function isLocalAlbumModifiedOrCustom(album: EventAlbum): boolean {
+  const seed = (INITIAL_EVENT_ALBUMS || []).find((s) => s.id === album.id);
+  if (!seed) return true; // Custom album created by user or client
+  if ((album.portfolioPhotoId || '') !== (seed.portfolioPhotoId || '')) return true;
+  if ((album.title || '').trim() !== (seed.title || '').trim()) return true;
+  if ((album.description || '').trim() !== (seed.description || '').trim()) return true;
+  if ((album.category || '').trim() !== (seed.category || '').trim()) return true;
+  if ((album.coverImage || '') !== (seed.coverImage || '')) return true;
+  if ((album.date || '') !== (seed.date || '')) return true;
+  if (Boolean(album.active !== false) !== Boolean(seed.active !== false)) return true;
+  if (Boolean(album.featured) !== Boolean(seed.featured)) return true;
+  const localPhotos = Array.isArray(album.photos) ? album.photos : [];
+  const seedPhotos = Array.isArray(seed.photos) ? seed.photos : [];
+  if (localPhotos.length !== seedPhotos.length) return true;
+  for (let i = 0; i < localPhotos.length; i++) {
+    if (localPhotos[i]?.id !== seedPhotos[i]?.id || localPhotos[i]?.imageUrl !== seedPhotos[i]?.imageUrl) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function dataUrlToBlobClient(dataUrl: string): { blob: Blob; contentType: string; ext: string } | null {
+  try {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return null;
+    const contentType = match[1] || 'image/jpeg';
+    const byteString = atob(match[2]);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+    }
+    const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+    return { blob: new Blob([ab], { type: contentType }), contentType, ext };
+  } catch {
+    return null;
+  }
+}
+
+async function uploadEventAlbumAssetToSupabase(
+  albumId: string,
+  fileOrBlob: File | Blob,
+  fileName: string,
+  contentType?: string
+): Promise<string | null> {
+  if (!supabase) return null;
+  try {
+    const cleanName = (fileName || `foto_${Date.now()}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `event-albums/${albumId}/${Date.now()}_${Math.floor(Math.random() * 10000)}_${cleanName}`;
+    const { error } = await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .upload(storagePath, fileOrBlob, {
+        contentType: contentType || (fileOrBlob instanceof File ? fileOrBlob.type : 'image/jpeg') || 'image/jpeg',
+        upsert: true,
+      });
+    if (error) {
+      console.warn('[Supabase Storage Browser Upload Error]:', error.message);
+      return null;
+    }
+    const { data } = supabase.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);
+    return data?.publicUrl || null;
+  } catch (err: any) {
+    console.warn('[Supabase Storage Browser Upload Exception]:', err?.message || err);
+    return null;
+  }
+}
+
+async function readDeletedEventAlbumIdsFromSupabase(): Promise<string[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .download(EVENT_ALBUMS_DELETED_FILE);
+    if (error || !data) return [];
+    const text = await data.text();
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeDeletedEventAlbumIdsToSupabase(deletedIds: string[]): Promise<void> {
+  if (!supabase) return;
+  try {
+    const blob = new Blob([JSON.stringify(deletedIds)], { type: 'application/json' });
+    await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .upload(EVENT_ALBUMS_DELETED_FILE, blob, {
+        contentType: 'application/json',
+        upsert: true,
+        cacheControl: '0',
+      });
+  } catch (err: any) {
+    console.warn('[Supabase Event Albums] Falha ao atualizar _deleted.json:', err?.message || err);
+  }
+}
+
+async function fetchEventAlbumsFromSupabaseCloud(): Promise<{
+  albums: EventAlbum[];
+  deletedIds: string[];
+  hasCloudData: boolean;
+} | null> {
+  if (!supabase) return null;
+  try {
+    const { data: files, error } = await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .list(EVENT_ALBUMS_META_DIR, { limit: 1000 });
+    if (error) {
+      console.warn('[Supabase Event Albums Browser] Erro ao listar metadados:', error.message);
+      return null;
+    }
+    if (!files || files.length === 0) {
+      return { albums: [], deletedIds: [], hasCloudData: false };
+    }
+
+    const hasDeletedFile = files.some((f) => f.name === '_deleted.json');
+    const deletedIds = hasDeletedFile ? await readDeletedEventAlbumIdsFromSupabase() : [];
+    const deletedSet = new Set(deletedIds);
+
+    const albumFiles = files.filter((f) => f.name && f.name.endsWith('.json') && !f.name.startsWith('_'));
+    const albums: EventAlbum[] = [];
+    const BATCH = 15;
+    for (let i = 0; i < albumFiles.length; i += BATCH) {
+      const slice = albumFiles.slice(i, i + BATCH);
+      const downloaded = await Promise.all(
+        slice.map(async (file) => {
+          try {
+            const { data, error: dlErr } = await supabase!.storage
+              .from(EVENT_ALBUMS_BUCKET)
+              .download(`${EVENT_ALBUMS_META_DIR}/${file.name}`);
+            if (dlErr || !data) return null;
+            const parsed = JSON.parse(await data.text());
+            if (!parsed || !parsed.id || deletedSet.has(String(parsed.id))) return null;
+            return {
+              ...parsed,
+              photos: Array.isArray(parsed.photos) ? parsed.photos : [],
+              photoCount: Array.isArray(parsed.photos) ? parsed.photos.length : Number(parsed.photoCount || 0),
+            } as EventAlbum;
+          } catch {
+            return null;
+          }
+        })
+      );
+      downloaded.forEach((a) => {
+        if (a) albums.push(a);
+      });
+    }
+
+    albums.sort((a, b) => {
+      const tA = new Date(a.createdAt || 0).getTime();
+      const tB = new Date(b.createdAt || 0).getTime();
+      return tB - tA;
+    });
+
+    return { albums, deletedIds, hasCloudData: true };
+  } catch (err: any) {
+    console.warn('[Supabase Event Albums Browser] Exceção ao carregar:', err?.message || err);
+    return null;
+  }
+}
+
+async function fetchSingleEventAlbumFromSupabaseCloud(idOrSlug: string): Promise<EventAlbum | null> {
+  if (!supabase) return null;
+  try {
+    const deletedIds = await readDeletedEventAlbumIdsFromSupabase();
+    if (deletedIds.includes(idOrSlug)) return null;
+
+    const { data, error } = await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .download(`${EVENT_ALBUMS_META_DIR}/${idOrSlug}.json`);
+    if (!error && data) {
+      const parsed = JSON.parse(await data.text());
+      if (parsed && parsed.id && !deletedIds.includes(String(parsed.id))) {
+        return {
+          ...parsed,
+          photos: Array.isArray(parsed.photos) ? parsed.photos : [],
+          photoCount: Array.isArray(parsed.photos) ? parsed.photos.length : Number(parsed.photoCount || 0),
+        };
+      }
+    }
+  } catch {}
+
+  const cloud = await fetchEventAlbumsFromSupabaseCloud();
+  if (!cloud) return null;
+  return cloud.albums.find((a) => a.id === idOrSlug || a.slug === idOrSlug) || null;
+}
+
+async function saveEventAlbumToSupabaseCloud(album: EventAlbum): Promise<EventAlbum> {
+  const normalized: EventAlbum = {
+    ...album,
+    photos: Array.isArray(album.photos) ? album.photos.map((p) => ({ ...p })) : [],
+    photoCount: Array.isArray(album.photos) ? album.photos.length : Number(album.photoCount || 0),
+  };
+
+  if (!supabase) return normalized;
+
+  if (normalized.coverImage && normalized.coverImage.startsWith('data:')) {
+    const parsed = dataUrlToBlobClient(normalized.coverImage);
+    if (parsed) {
+      const uploadedUrl = await uploadEventAlbumAssetToSupabase(
+        normalized.id,
+        parsed.blob,
+        `cover.${parsed.ext}`,
+        parsed.contentType
+      );
+      if (uploadedUrl) normalized.coverImage = uploadedUrl;
+    }
+  }
+
+  if (Array.isArray(normalized.photos)) {
+    for (let i = 0; i < normalized.photos.length; i++) {
+      const ph = normalized.photos[i];
+      if (ph.imageUrl && ph.imageUrl.startsWith('data:')) {
+        const parsed = dataUrlToBlobClient(ph.imageUrl);
+        if (parsed) {
+          const uploadedUrl = await uploadEventAlbumAssetToSupabase(
+            normalized.id,
+            parsed.blob,
+            `photo_${i}.${parsed.ext}`,
+            parsed.contentType
+          );
+          if (uploadedUrl) {
+            ph.imageUrl = uploadedUrl;
+            ph.thumbnailUrl = uploadedUrl;
+          }
+        }
+      }
+    }
+  }
+
+  const blob = new Blob([JSON.stringify(normalized, null, 2)], { type: 'application/json' });
+  const { error } = await supabase.storage
+    .from(EVENT_ALBUMS_BUCKET)
+    .upload(`${EVENT_ALBUMS_META_DIR}/${normalized.id}.json`, blob, {
+      contentType: 'application/json',
+      upsert: true,
+      cacheControl: '0',
+    });
+
+  if (error) {
+    throw new Error(`Erro ao salvar álbum na nuvem: ${error.message}`);
+  }
+
+  const deletedIds = await readDeletedEventAlbumIdsFromSupabase();
+  if (deletedIds.includes(normalized.id)) {
+    await writeDeletedEventAlbumIdsToSupabase(deletedIds.filter((d) => d !== normalized.id));
+  }
+
+  return normalized;
+}
+
+async function deleteEventAlbumFromSupabaseCloud(albumId: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .remove([`${EVENT_ALBUMS_META_DIR}/${albumId}.json`]);
+
+    const deletedIds = await readDeletedEventAlbumIdsFromSupabase();
+    if (!deletedIds.includes(albumId)) {
+      deletedIds.push(albumId);
+      await writeDeletedEventAlbumIdsToSupabase(deletedIds);
+    }
+
+    try {
+      const { data: photoFiles } = await supabase.storage
+        .from(EVENT_ALBUMS_BUCKET)
+        .list(`event-albums/${albumId}`, { limit: 1000 });
+      if (photoFiles && photoFiles.length > 0) {
+        const paths = photoFiles.map((f) => `event-albums/${albumId}/${f.name}`);
+        await supabase.storage.from(EVENT_ALBUMS_BUCKET).remove(paths);
+      }
+    } catch {}
+  } catch (err: any) {
+    console.warn('[Supabase Event Album Browser Delete Warning]:', err?.message || err);
   }
 }
 
@@ -2500,33 +2802,100 @@ export const api = {
   // EVENT ALBUMS (ÁLBUNS DE EVENTOS / TRABALHOS COMPLETOS)
   // ==========================================
   async getEventAlbums(category?: string, all?: boolean): Promise<EventAlbum[]> {
-    let apiAlbums: EventAlbum[] = [];
-    try {
-      const q = new URLSearchParams();
-      if (category) q.set('category', category);
-      if (all) q.set('all', 'true');
-      const res = await fetch(`${API_BASE}/event-albums?${q.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          apiAlbums = data;
+    const [cloudResult, apiAlbums] = await Promise.all([
+      fetchEventAlbumsFromSupabaseCloud().catch(() => null),
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE}/event-albums?all=true`);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data)) return data as EventAlbum[];
+          }
+        } catch (err: any) {
+          console.warn('[Event Albums] API indisponível, usando Supabase direto/cache:', err?.message);
         }
+        return [] as EventAlbum[];
+      })(),
+    ]);
+
+    const deletedSet = new Set<string>(cloudResult?.deletedIds || []);
+    const cloudMap = new Map<string, EventAlbum>();
+
+    if (cloudResult && Array.isArray(cloudResult.albums)) {
+      cloudResult.albums.forEach((a) => {
+        if (a && a.id && !deletedSet.has(a.id)) {
+          cloudMap.set(a.id, a);
+        }
+      });
+    }
+
+    // One-time auto-migration: Rescue any existing albums saved locally in this browser (e.g. from Vercel localStorage fallback)
+    const rawLocalAlbums = getRawStoredClientEventAlbums();
+    const localAlbumsToMigrate = rawLocalAlbums.filter((localAlbum) => {
+      if (!localAlbum || !localAlbum.id) return false;
+      if (deletedSet.has(localAlbum.id)) return false;
+      if (cloudMap.has(localAlbum.id)) return false;
+      return isLocalAlbumModifiedOrCustom(localAlbum);
+    });
+
+    if (localAlbumsToMigrate.length > 0 && supabase) {
+      await Promise.all(
+        localAlbumsToMigrate.map(async (localAlbum) => {
+          try {
+            const savedCloud = await saveEventAlbumToSupabaseCloud(localAlbum);
+            cloudMap.set(savedCloud.id, savedCloud);
+            // Best-effort sync to server too
+            fetch(`${API_BASE}/admin/event-albums`, {
+              method: 'POST',
+              headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify(savedCloud),
+            }).catch(() => {});
+          } catch (migErr: any) {
+            console.warn('[Event Albums] Falha ao migrar álbum local para nuvem:', migErr?.message);
+            cloudMap.set(localAlbum.id, localAlbum);
+          }
+        })
+      );
+    } else {
+      // If Supabase client is unavailable, keep non-deleted local custom albums in memory/merge
+      rawLocalAlbums.forEach((localAlbum) => {
+        if (localAlbum?.id && !deletedSet.has(localAlbum.id) && !cloudMap.has(localAlbum.id) && isLocalAlbumModifiedOrCustom(localAlbum)) {
+          cloudMap.set(localAlbum.id, localAlbum);
+        }
+      });
+    }
+
+    // Merge server API albums (avoiding deleted ones; cloudMap takes priority)
+    const mergedMap = new Map<string, EventAlbum>();
+    apiAlbums.forEach((a) => {
+      if (a && a.id && !deletedSet.has(a.id)) {
+        mergedMap.set(a.id, a);
       }
-    } catch (err: any) {
-      console.warn('[Event Albums] API indisponível, usando armazenamento local/cache:', err.message);
-    }
+    });
+    cloudMap.forEach((a, id) => {
+      mergedMap.set(id, a);
+    });
 
-    // Merge with client-side localStorage (ensures smooth operation on Vercel)
-    const localAlbums = getClientEventAlbums();
-    const map = new Map<string, EventAlbum>();
-    localAlbums.forEach((a) => map.set(a.id, a));
-    apiAlbums.forEach((a) => map.set(a.id, a));
+    // Include seed albums ONLY if not deleted and not overridden
+    (INITIAL_EVENT_ALBUMS || []).forEach((seed) => {
+      if (!mergedMap.has(seed.id) && !deletedSet.has(seed.id)) {
+        mergedMap.set(seed.id, { ...seed, photos: Array.isArray(seed.photos) ? [...seed.photos] : [] });
+      }
+    });
 
-    let list = Array.from(map.values());
-    if (list.length === 0) {
-      list = Array.isArray(INITIAL_EVENT_ALBUMS) ? [...INITIAL_EVENT_ALBUMS] : [];
-    }
+    const fullList = Array.from(mergedMap.values())
+      .map((a) => ({
+        ...a,
+        photos: Array.isArray(a.photos) ? a.photos : [],
+        photoCount: Array.isArray(a.photos) ? a.photos.length : Number(a.photoCount || 0),
+        coverImage: a.coverImage || (a.photos && a.photos[0]?.imageUrl) || '',
+      }))
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
+    // Keep localStorage cache synchronized with cloud state (and clean up deleted items)
+    saveClientEventAlbums(fullList);
+
+    let list = fullList;
     if (!all) {
       list = list.filter((a) => a.active !== false);
     }
@@ -2538,12 +2907,28 @@ export const api = {
   },
 
   async getEventAlbum(id: string): Promise<EventAlbum | null> {
-    try {
-      const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(id)}`);
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {}
+    const [cloudAlbum, apiAlbum] = await Promise.all([
+      fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null),
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE}/event-albums/${encodeURIComponent(id)}`);
+          if (res.ok) return (await res.json()) as EventAlbum;
+        } catch {}
+        return null;
+      })(),
+    ]);
+
+    const resolved = cloudAlbum || apiAlbum;
+    if (resolved) {
+      const local = getRawStoredClientEventAlbums().filter((a) => a.id !== resolved.id);
+      local.unshift(resolved);
+      saveClientEventAlbums(local);
+      return resolved;
+    }
+
+    const deletedIds = await readDeletedEventAlbumIdsFromSupabase().catch(() => []);
+    if (deletedIds.includes(id)) return null;
+
     const local = getClientEventAlbums();
     return local.find((a) => a.id === id || a.slug === id) || null;
   },
@@ -2553,95 +2938,139 @@ export const api = {
     const slug = toSlug(trimmedTitle || 'album');
     const newId = album.id || `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+    let preparedCover = album.coverImage || '';
+    if (preparedCover && preparedCover.startsWith('data:') && supabase) {
+      const parsed = dataUrlToBlobClient(preparedCover);
+      if (parsed) {
+        const uploadedUrl = await uploadEventAlbumAssetToSupabase(
+          newId,
+          parsed.blob,
+          `cover.${parsed.ext}`,
+          parsed.contentType
+        );
+        if (uploadedUrl) preparedCover = uploadedUrl;
+      }
+    }
+
     const newAlbum: EventAlbum = {
       id: newId,
       title: trimmedTitle,
-      slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
+      slug: album.slug || `${slug}-${Math.floor(Math.random() * 1000)}`,
       category: album.category || 'Casamentos',
       date: album.date || new Date().toISOString().split('T')[0],
       description: album.description || '',
-      coverImage: album.coverImage || '',
-      photoCount: 0,
-      photos: [],
+      coverImage: preparedCover,
+      photoCount: Array.isArray(album.photos) ? album.photos.length : 0,
+      photos: Array.isArray(album.photos) ? album.photos : [],
       portfolioPhotoId: album.portfolioPhotoId || undefined,
       active: album.active !== false,
       featured: Boolean(album.featured),
-      order: 1,
-      createdAt: new Date().toISOString(),
+      order: album.order || 1,
+      createdAt: album.createdAt || new Date().toISOString(),
     };
 
-    // 1. Try Backend API first
+    // 1. Try Backend API first (send prepared album including deterministic id & uploaded cover URL)
     try {
       const res = await fetch(`${API_BASE}/admin/event-albums`, {
         method: 'POST',
         headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(album),
+        body: JSON.stringify(newAlbum),
       });
       const created = await parseJsonResponse<EventAlbum>(res, 'Erro ao criar álbum de evento.');
       if (created && created.id) {
-        const local = getClientEventAlbums().filter((a) => a.id !== created.id);
-        local.unshift(created);
+        // Ensure it exists in Supabase Storage cloud (no-op if backend already wrote it, or rescues if backend didn't have Supabase)
+        const synced = supabase ? await saveEventAlbumToSupabaseCloud(created).catch(() => created) : created;
+        const local = getClientEventAlbums().filter((a) => a.id !== synced.id);
+        local.unshift(synced);
         saveClientEventAlbums(local);
-        return created;
+        return synced;
       }
     } catch (apiErr: any) {
-      console.warn('[Event Album] Backend falhou ou retornou erro (aplicando fallback LocalStorage para Vercel):', apiErr.message);
+      console.warn('[Event Album] Backend falhou ou retornou erro (salvando diretamente no Supabase):', apiErr.message);
     }
 
-    // 2. Client-side LocalStorage Fallback (ensures user operation NEVER crashes with 500 outside AI Studio / on Vercel)
-    const local = getClientEventAlbums().filter((a) => a.id !== newAlbum.id);
-    local.unshift(newAlbum);
+    // 2. Direct Supabase Storage Cloud fallback (works on Vercel even if API serverless route fails)
+    const savedAlbum = await saveEventAlbumToSupabaseCloud(newAlbum).catch(() => newAlbum);
+    const local = getClientEventAlbums().filter((a) => a.id !== savedAlbum.id);
+    local.unshift(savedAlbum);
     saveClientEventAlbums(local);
-    return newAlbum;
+    return savedAlbum;
   },
 
   async updateEventAlbum(id: string, updates: Partial<EventAlbum>): Promise<EventAlbum> {
+    const cleanUpdates: Partial<EventAlbum> = { ...updates };
+    if (cleanUpdates.coverImage && cleanUpdates.coverImage.startsWith('data:') && supabase) {
+      const parsed = dataUrlToBlobClient(cleanUpdates.coverImage);
+      if (parsed) {
+        const uploadedUrl = await uploadEventAlbumAssetToSupabase(
+          id,
+          parsed.blob,
+          `cover.${parsed.ext}`,
+          parsed.contentType
+        );
+        if (uploadedUrl) cleanUpdates.coverImage = uploadedUrl;
+      }
+    }
+
     // 1. Try Backend API
     try {
       const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(id)}`, {
         method: 'PUT',
         headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
+        body: JSON.stringify(cleanUpdates),
       });
       const updated = await parseJsonResponse<EventAlbum>(res, 'Erro ao atualizar álbum de evento.');
       if (updated && updated.id) {
+        const synced = supabase ? await saveEventAlbumToSupabaseCloud(updated).catch(() => updated) : updated;
         const local = getClientEventAlbums();
         const idx = local.findIndex((a) => a.id === id);
-        if (idx !== -1) local[idx] = { ...local[idx], ...updated };
-        else local.push(updated);
+        if (idx !== -1) local[idx] = { ...local[idx], ...synced };
+        else local.unshift(synced);
         saveClientEventAlbums(local);
-        return updated;
+        return synced;
       }
     } catch (apiErr: any) {
-      console.warn('[Event Album] Backend PUT falhou (usando LocalStorage):', apiErr.message);
+      console.warn('[Event Album] Backend PUT falhou (salvando diretamente no Supabase):', apiErr.message);
     }
 
-    // 2. LocalStorage Fallback
+    // 2. Direct Supabase Cloud + LocalStorage Fallback
+    const existing =
+      (await fetchSingleEventAlbumFromSupabaseCloud(id).catch(() => null)) ||
+      getClientEventAlbums().find((a) => a.id === id || a.slug === id);
+
+    const mergedAlbum: EventAlbum = existing
+      ? {
+          ...existing,
+          ...cleanUpdates,
+          id: existing.id,
+          photos: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos : (existing.photos || []),
+        }
+      : {
+          id,
+          title: cleanUpdates.title || 'Álbum',
+          slug: cleanUpdates.slug || id,
+          category: cleanUpdates.category || 'Casamentos',
+          date: cleanUpdates.date || new Date().toISOString().split('T')[0],
+          description: cleanUpdates.description || '',
+          coverImage: cleanUpdates.coverImage || '',
+          photoCount: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos.length : Number(cleanUpdates.photoCount || 0),
+          photos: Array.isArray(cleanUpdates.photos) ? cleanUpdates.photos : [],
+          portfolioPhotoId: cleanUpdates.portfolioPhotoId,
+          active: cleanUpdates.active !== false,
+          featured: Boolean(cleanUpdates.featured),
+          order: cleanUpdates.order || 1,
+          createdAt: cleanUpdates.createdAt || new Date().toISOString(),
+        };
+
+    mergedAlbum.photoCount = Array.isArray(mergedAlbum.photos) ? mergedAlbum.photos.length : 0;
+
+    const saved = await saveEventAlbumToSupabaseCloud(mergedAlbum).catch(() => mergedAlbum);
     const local = getClientEventAlbums();
-    const idx = local.findIndex((a) => a.id === id);
-    if (idx !== -1) {
-      local[idx] = { ...local[idx], ...updates };
-      saveClientEventAlbums(local);
-      return local[idx];
-    }
-    const fallbackAlbum: EventAlbum = {
-      id,
-      title: updates.title || 'Álbum',
-      slug: id,
-      category: updates.category || 'Casamentos',
-      date: updates.date || new Date().toISOString().split('T')[0],
-      coverImage: updates.coverImage || '',
-      photoCount: updates.photoCount || 0,
-      photos: updates.photos || [],
-      portfolioPhotoId: updates.portfolioPhotoId,
-      active: updates.active !== false,
-      featured: Boolean(updates.featured),
-      order: updates.order || 1,
-      createdAt: updates.createdAt || new Date().toISOString(),
-    };
-    local.push(fallbackAlbum);
+    const idx = local.findIndex((a) => a.id === saved.id);
+    if (idx !== -1) local[idx] = saved;
+    else local.unshift(saved);
     saveClientEventAlbums(local);
-    return fallbackAlbum;
+    return saved;
   },
 
   async deleteEventAlbum(id: string): Promise<void> {
@@ -2653,10 +3082,11 @@ export const api = {
       });
       await parseJsonResponse(res, 'Erro ao excluir álbum de evento.');
     } catch (err: any) {
-      console.warn('[Event Album] Backend DELETE falhou (limpando LocalStorage):', err.message);
+      console.warn('[Event Album] Backend DELETE falhou (executando exclusão direta no Supabase):', err.message);
     }
 
-    // 2. Always remove from LocalStorage
+    // 2. Always delete from Supabase Storage & update tombstone + LocalStorage
+    await deleteEventAlbumFromSupabaseCloud(id);
     const local = getClientEventAlbums().filter((a) => a.id !== id && a.slug !== id);
     saveClientEventAlbums(local);
   },
@@ -2681,7 +3111,8 @@ export const api = {
     }
 
     const allUploaded: EventAlbumPhoto[] = [];
-    let updatedAlbum: any = null;
+    let updatedAlbum: EventAlbum | undefined = undefined;
+    let usedClientDirectUpload = false;
     const BATCH_SIZE = 2;
     let apiFailed = false;
 
@@ -2708,7 +3139,16 @@ export const api = {
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.photos)) {
-            allUploaded.push(...data.photos);
+            const batchPhotos: EventAlbumPhoto[] = data.photos;
+            // Verify backend didn't fall back to ephemeral local URL or data URL when Supabase Storage is available
+            const hasNonCloudUrl = batchPhotos.some(
+              (p) => !p.imageUrl || p.imageUrl.startsWith('data:') || p.imageUrl.startsWith('/event-albums/')
+            );
+            if (hasNonCloudUrl && supabase) {
+              apiFailed = true;
+              break;
+            }
+            allUploaded.push(...batchPhotos);
             if (data.album) updatedAlbum = data.album;
           }
         } else {
@@ -2721,31 +3161,72 @@ export const api = {
       }
     }
 
-    // If backend multipart upload failed (e.g. 4.5MB Vercel limit or serverless error), convert remaining to base64 Data URLs locally
+    // If backend multipart upload failed (e.g. 4.5MB Vercel limit) or didn't return cloud URLs, upload remaining directly from browser to Supabase Storage!
     if (apiFailed || allUploaded.length < optimizedFiles.length) {
+      usedClientDirectUpload = true;
       const remainingStartIndex = allUploaded.length;
+      const existingAlbum =
+        updatedAlbum ||
+        (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
+        getClientEventAlbums().find((a) => a.id === albumId);
+      const baseOrder = existingAlbum?.photos?.length
+        ? Math.max(...existingAlbum.photos.map((p) => p.order || 0))
+        : 0;
+
       for (let i = remainingStartIndex; i < optimizedFiles.length; i++) {
         const f = optimizedFiles[i];
         if (onProgress) {
           onProgress(i + 1, optimizedFiles.length, f.name);
         }
-        const dataUrl = await readFileAsDataUrl(f);
+
+        let photoUrl = await uploadEventAlbumAssetToSupabase(albumId, f, f.name, f.type);
+        if (!photoUrl) {
+          photoUrl = await readFileAsDataUrl(f);
+        }
+
         const newPhoto: EventAlbumPhoto = {
-          id: `eap-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`,
+          id: `eap-${Date.now()}-${i}-${Math.floor(Math.random() * 10000)}`,
           albumId,
-          imageUrl: dataUrl,
+          imageUrl: photoUrl,
+          thumbnailUrl: photoUrl,
           title: f.name.replace(/\.[^/.]+$/, ''),
-          order: i + 1,
+          order: baseOrder + i + 1,
           createdAt: new Date().toISOString(),
         };
         allUploaded.push(newPhoto);
       }
+
+      if (existingAlbum) {
+        const existingPhotoIds = new Set((existingAlbum.photos || []).map((p) => p.id));
+        const newUniquePhotos = allUploaded.filter((p) => !existingPhotoIds.has(p.id));
+        const mergedPhotos = [...(existingAlbum.photos || []), ...newUniquePhotos];
+        const albumToSave: EventAlbum = {
+          ...existingAlbum,
+          photos: mergedPhotos,
+          photoCount: mergedPhotos.length,
+          coverImage: existingAlbum.coverImage || mergedPhotos[0]?.imageUrl || '',
+        };
+        updatedAlbum = await saveEventAlbumToSupabaseCloud(albumToSave).catch(() => albumToSave);
+        // Best-effort sync back to backend API
+        fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}`, {
+          method: 'PUT',
+          headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedAlbum),
+        }).catch(() => {});
+      }
+    } else if (usedClientDirectUpload === false && updatedAlbum && supabase) {
+      // Ensure updatedAlbum returned by backend is synced cleanly
+      updatedAlbum = await saveEventAlbumToSupabaseCloud(updatedAlbum).catch(() => updatedAlbum);
     }
 
-    // Always update client LocalStorage with the photos
+    // Update client LocalStorage cache
     const local = getClientEventAlbums();
     const albumIdx = local.findIndex((a) => a.id === albumId);
-    if (albumIdx !== -1) {
+    if (updatedAlbum) {
+      if (albumIdx !== -1) local[albumIdx] = updatedAlbum;
+      else local.unshift(updatedAlbum);
+      saveClientEventAlbums(local);
+    } else if (albumIdx !== -1) {
       const currentPhotos = local[albumIdx].photos || [];
       const mergedPhotos = [...currentPhotos, ...allUploaded];
       local[albumIdx].photos = mergedPhotos;
@@ -2765,6 +3246,8 @@ export const api = {
   },
 
   async deleteEventAlbumPhoto(albumId: string, photoId: string): Promise<void> {
+    let backendAlbum: EventAlbum | null = null;
+
     // 1. Try Backend DELETE
     try {
       const res = await fetch(
@@ -2774,22 +3257,42 @@ export const api = {
           headers: getAdminHeaders(),
         }
       );
-      await parseJsonResponse(res, 'Erro ao excluir foto do álbum.');
+      const data = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(res, 'Erro ao excluir foto do álbum.');
+      if (data?.album) {
+        backendAlbum = data.album;
+      }
     } catch (err: any) {
-      console.warn('[Event Album Photo] Backend DELETE falhou (atualizando LocalStorage):', err.message);
+      console.warn('[Event Album Photo] Backend DELETE falhou (atualizando Supabase diretamente):', err.message);
     }
 
-    // 2. Always remove from LocalStorage
-    const local = getClientEventAlbums();
-    const albumIdx = local.findIndex((a) => a.id === albumId);
-    if (albumIdx !== -1) {
-      const currentPhotos = local[albumIdx].photos || [];
-      const updatedPhotos = currentPhotos.filter((p) => p.id !== photoId);
-      local[albumIdx].photos = updatedPhotos;
-      local[albumIdx].photoCount = updatedPhotos.length;
-      if (local[albumIdx].coverImage && !updatedPhotos.some((p) => p.imageUrl === local[albumIdx].coverImage)) {
-        local[albumIdx].coverImage = updatedPhotos[0]?.imageUrl || '';
+    // 2. Ensure deletion is persisted in Supabase Cloud and LocalStorage
+    const sourceAlbum =
+      backendAlbum ||
+      (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
+      getClientEventAlbums().find((a) => a.id === albumId);
+
+    if (sourceAlbum) {
+      let albumToSync = sourceAlbum;
+      if (!backendAlbum) {
+        const currentPhotos = sourceAlbum.photos || [];
+        const deletedPhoto = currentPhotos.find((p) => p.id === photoId);
+        const updatedPhotos = currentPhotos.filter((p) => p.id !== photoId);
+        albumToSync = {
+          ...sourceAlbum,
+          photos: updatedPhotos,
+          photoCount: updatedPhotos.length,
+          coverImage:
+            deletedPhoto && sourceAlbum.coverImage === deletedPhoto.imageUrl
+              ? updatedPhotos[0]?.imageUrl || ''
+              : sourceAlbum.coverImage,
+        };
+        albumToSync = await saveEventAlbumToSupabaseCloud(albumToSync).catch(() => albumToSync);
       }
+
+      const local = getClientEventAlbums();
+      const idx = local.findIndex((a) => a.id === albumId);
+      if (idx !== -1) local[idx] = albumToSync;
+      else local.unshift(albumToSync);
       saveClientEventAlbums(local);
     }
   },

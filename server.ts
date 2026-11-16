@@ -66,6 +66,10 @@ import {
   uploadToSupabaseStorage,
   deleteFromSupabaseStorage,
   migrateLocalDatabaseToSupabase,
+  loadEventAlbumsFromSupabase,
+  getEventAlbumFromSupabase,
+  saveEventAlbumToSupabase,
+  deleteEventAlbumFromSupabase,
 } from './server/supabase.ts';
 
 // Safe directory resolution for ESM and CJS bundle
@@ -310,16 +314,25 @@ async function initSupabaseDatabase() {
 
   console.log('[Database] Conexão com Supabase estabelecida com sucesso!');
   try {
-    const [sbClients, sbEvents, sbGalleries, sbPhotos, sbSelections, sbCategories, sbPortfolioPhotos] =
-      await Promise.all([
-        loadClientsFromSupabase(),
-        loadEventsFromSupabase(),
-        loadGalleriesFromSupabase(),
-        loadPhotosFromSupabase(),
-        loadSelectionsFromSupabase(),
-        loadPortfolioCategoriesFromSupabase(),
-        loadPortfolioPhotosFromSupabase(),
-      ]);
+    const [
+      sbClients,
+      sbEvents,
+      sbGalleries,
+      sbPhotos,
+      sbSelections,
+      sbCategories,
+      sbPortfolioPhotos,
+      sbEventAlbums,
+    ] = await Promise.all([
+      loadClientsFromSupabase(),
+      loadEventsFromSupabase(),
+      loadGalleriesFromSupabase(),
+      loadPhotosFromSupabase(),
+      loadSelectionsFromSupabase(),
+      loadPortfolioCategoriesFromSupabase(),
+      loadPortfolioPhotosFromSupabase(),
+      loadEventAlbumsFromSupabase(),
+    ]);
 
     let loadedAny = false;
     if (sbCategories && sbCategories.length > 0) {
@@ -348,6 +361,18 @@ async function initSupabaseDatabase() {
     }
     if (sbSelections && sbSelections.length > 0) {
       db.selections = sbSelections;
+      loadedAny = true;
+    }
+    if (sbEventAlbums && sbEventAlbums.albums.length > 0) {
+      const deletedSet = new Set(sbEventAlbums.deletedIds);
+      const map = new Map<string, EventAlbum>();
+      sbEventAlbums.albums.forEach((a) => map.set(a.id, a));
+      INITIAL_EVENT_ALBUMS.forEach((seed) => {
+        if (!map.has(seed.id) && !deletedSet.has(seed.id)) {
+          map.set(seed.id, JSON.parse(JSON.stringify(seed)));
+        }
+      });
+      db.eventAlbums = Array.from(map.values());
       loadedAny = true;
     }
 
@@ -1028,48 +1053,106 @@ async function setupRoutes() {
   // ==========================================
   // EVENT ALBUMS (ÁLBUNS DE EVENTOS / TRABALHOS COMPLETOS)
   // ==========================================
-  app.get('/api/event-albums', (req: Request, res: Response) => {
-    const { category, all } = req.query;
-    let list = Array.isArray(db.eventAlbums) ? db.eventAlbums : [...INITIAL_EVENT_ALBUMS];
-    if (!all) {
-      list = list.filter((a) => a.active !== false);
-    }
-    if (category && category !== 'Todos') {
-      list = list.filter((a) => a.category?.toLowerCase() === String(category).toLowerCase());
-    }
-    const enriched = list.map((a) => ({
-      ...a,
-      photoCount: Array.isArray(a.photos) ? a.photos.length : 0,
-      coverImage: a.coverImage || (a.photos && a.photos[0]?.imageUrl) || '',
-    }));
-    res.json(enriched);
-  });
+  const resolveEventAlbumsState = async (): Promise<{ albums: EventAlbum[]; deletedIds: string[] }> => {
+    const cloud = isSupabaseConfigured() ? await loadEventAlbumsFromSupabase().catch(() => null) : null;
+    const deletedIds = cloud?.deletedIds || [];
+    const deletedSet = new Set(deletedIds);
 
-  app.get('/api/event-albums/:id', (req: Request, res: Response) => {
-    const { id } = req.params;
-    let album = (db.eventAlbums || []).find((a) => a.id === id || a.slug === id);
-    if (!album) {
-      album = INITIAL_EVENT_ALBUMS.find((a) => a.id === id || a.slug === id);
+    const map = new Map<string, EventAlbum>();
+
+    // On non-serverless (or if cloud failed), include local db.eventAlbums
+    if (!isServerless || !cloud) {
+      (db.eventAlbums || []).forEach((a) => {
+        if (a && a.id && !deletedSet.has(a.id)) {
+          map.set(a.id, a);
+        }
+      });
     }
-    if (!album) {
-      return res.status(404).json({ error: 'Álbum de evento não encontrado' });
+
+    // Cloud albums override local/seed
+    if (cloud && Array.isArray(cloud.albums)) {
+      cloud.albums.forEach((a) => {
+        if (a && a.id && !deletedSet.has(a.id)) {
+          map.set(a.id, a);
+        }
+      });
     }
-    res.json({
-      ...album,
-      photoCount: Array.isArray(album.photos) ? album.photos.length : 0,
-      photos: Array.isArray(album.photos) ? album.photos.sort((a, b) => a.order - b.order) : [],
+
+    // Include seed albums ONLY if not deleted and not overridden
+    INITIAL_EVENT_ALBUMS.forEach((seed) => {
+      if (!map.has(seed.id) && !deletedSet.has(seed.id)) {
+        map.set(seed.id, JSON.parse(JSON.stringify(seed)));
+      }
     });
+
+    const merged = Array.from(map.values()).sort((a, b) => {
+      const tA = new Date(a.createdAt || 0).getTime();
+      const tB = new Date(b.createdAt || 0).getTime();
+      return tB - tA;
+    });
+
+    db.eventAlbums = merged;
+    return { albums: merged, deletedIds };
+  };
+
+  const findSingleEventAlbum = async (idOrSlug: string): Promise<EventAlbum | null> => {
+    if (isSupabaseConfigured()) {
+      const direct = await getEventAlbumFromSupabase(idOrSlug).catch(() => null);
+      if (direct) return direct;
+    }
+    const { albums } = await resolveEventAlbumsState();
+    return albums.find((a) => a.id === idOrSlug || a.slug === idOrSlug) || null;
+  };
+
+  app.get('/api/event-albums', async (req: Request, res: Response) => {
+    try {
+      const { category, all } = req.query;
+      const { albums } = await resolveEventAlbumsState();
+      let list = albums;
+      if (!all) {
+        list = list.filter((a) => a.active !== false);
+      }
+      if (category && category !== 'Todos') {
+        list = list.filter((a) => a.category?.toLowerCase() === String(category).toLowerCase());
+      }
+      const enriched = list.map((a) => ({
+        ...a,
+        photoCount: Array.isArray(a.photos) ? a.photos.length : 0,
+        coverImage: a.coverImage || (a.photos && a.photos[0]?.imageUrl) || '',
+      }));
+      return res.json(enriched);
+    } catch (err: any) {
+      console.error('[GET Event Albums Error]:', err);
+      return res.json(Array.isArray(db.eventAlbums) ? db.eventAlbums : [...INITIAL_EVENT_ALBUMS]);
+    }
   });
 
-  app.post(['/api/admin/event-albums', '/api/event-albums'], (req: Request, res: Response) => {
+  app.get('/api/event-albums/:id', async (req: Request, res: Response) => {
     try {
-      const { title, category, date, description, coverImage, active, featured, portfolioPhotoId } = req.body;
+      const { id } = req.params;
+      const album = await findSingleEventAlbum(id);
+      if (!album) {
+        return res.status(404).json({ error: 'Álbum de evento não encontrado' });
+      }
+      return res.json({
+        ...album,
+        photoCount: Array.isArray(album.photos) ? album.photos.length : 0,
+        photos: Array.isArray(album.photos) ? [...album.photos].sort((a, b) => a.order - b.order) : [],
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Erro ao carregar álbum: ' + (err.message || String(err)) });
+    }
+  });
+
+  app.post(['/api/admin/event-albums', '/api/event-albums'], async (req: Request, res: Response) => {
+    try {
+      const { id: requestedId, title, category, date, description, coverImage, active, featured, portfolioPhotoId, photos } = req.body;
       if (!title || !title.trim()) {
         return res.status(400).json({ error: 'Título do álbum é obrigatório' });
       }
 
       const slug = toSlug(title);
-      const newAlbumId = `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const newAlbumId = requestedId || `album-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       let finalCover = coverImage || '';
 
       if (portfolioPhotoId) {
@@ -1081,24 +1164,30 @@ async function setupRoutes() {
         }
       }
 
-      const newAlbum: EventAlbum = {
+      const initialPhotos = Array.isArray(photos) ? photos : [];
+      let newAlbum: EventAlbum = {
         id: newAlbumId,
         title: title.trim(),
-        slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
+        slug: req.body.slug || `${slug}-${Math.floor(Math.random() * 1000)}`,
         category: category || 'Casamentos',
         date: date || new Date().toISOString().split('T')[0],
         description: description || '',
         coverImage: finalCover,
-        photoCount: 0,
-        photos: [],
+        photoCount: initialPhotos.length,
+        photos: initialPhotos,
         portfolioPhotoId: portfolioPhotoId || undefined,
         active: active !== false,
         featured: Boolean(featured),
         order: (Array.isArray(db.eventAlbums) ? db.eventAlbums.length : 0) + 1,
-        createdAt: new Date().toISOString(),
+        createdAt: req.body.createdAt || new Date().toISOString(),
       };
 
+      if (isSupabaseConfigured()) {
+        newAlbum = await saveEventAlbumToSupabase(newAlbum);
+      }
+
       if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+      db.eventAlbums = db.eventAlbums.filter((a) => a.id !== newAlbum.id);
       db.eventAlbums.unshift(newAlbum);
       saveDatabase();
       return res.status(201).json(newAlbum);
@@ -1108,51 +1197,61 @@ async function setupRoutes() {
     }
   });
 
-  app.put(['/api/admin/event-albums/:id', '/api/event-albums/:id'], (req: Request, res: Response) => {
+  app.put(['/api/admin/event-albums/:id', '/api/event-albums/:id'], async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      if (!Array.isArray(db.eventAlbums)) {
-        db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
+      const existingAlbum = await findSingleEventAlbum(id);
+      if (!existingAlbum) {
+        return res.status(404).json({ error: 'Álbum não encontrado' });
       }
-      const idx = db.eventAlbums.findIndex((a) => a.id === id || a.slug === id);
-      if (idx === -1) return res.status(404).json({ error: 'Álbum não encontrado' });
 
-      const prevAlbum = db.eventAlbums[idx];
       const { portfolioPhotoId } = req.body;
+      const bodyUpdates = { ...req.body };
 
       if (portfolioPhotoId !== undefined) {
         if (!Array.isArray(db.portfolioPhotos)) db.portfolioPhotos = [];
-        // Clear previous portfolio photos bound to this album
         db.portfolioPhotos.forEach((p) => {
-          if (p.albumId === id) {
+          if (p.albumId === existingAlbum.id) {
             p.albumId = undefined;
           }
         });
-        // Bind new portfolio photo if selected
         if (portfolioPhotoId) {
           const pPhoto = db.portfolioPhotos.find((p) => String(p.id) === String(portfolioPhotoId));
           if (pPhoto) {
-            pPhoto.albumId = id;
-            if (!req.body.coverImage && !prevAlbum.coverImage) {
-              req.body.coverImage = pPhoto.imageUrl;
+            pPhoto.albumId = existingAlbum.id;
+            if (!bodyUpdates.coverImage && !existingAlbum.coverImage) {
+              bodyUpdates.coverImage = pPhoto.imageUrl;
             }
           }
         }
       }
 
-      db.eventAlbums[idx] = {
-        ...db.eventAlbums[idx],
-        ...req.body,
+      let updatedAlbum: EventAlbum = {
+        ...existingAlbum,
+        ...bodyUpdates,
+        id: existingAlbum.id,
+        photos: Array.isArray(bodyUpdates.photos) ? bodyUpdates.photos : (existingAlbum.photos || []),
       };
+      updatedAlbum.photoCount = updatedAlbum.photos?.length || 0;
+
+      if (isSupabaseConfigured()) {
+        updatedAlbum = await saveEventAlbumToSupabase(updatedAlbum);
+      }
+
+      if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+      const idx = db.eventAlbums.findIndex((a) => a.id === existingAlbum.id);
+      if (idx !== -1) db.eventAlbums[idx] = updatedAlbum;
+      else db.eventAlbums.unshift(updatedAlbum);
+
       saveDatabase();
-      return res.json(db.eventAlbums[idx]);
+      return res.json(updatedAlbum);
     } catch (err: any) {
       console.error('[Event Album Update Error]:', err);
       return res.status(500).json({ error: 'Erro ao atualizar álbum de evento: ' + (err.message || String(err)) });
     }
   });
 
-  app.delete(['/api/admin/event-albums/:id', '/api/event-albums/:id'], (req: Request, res: Response) => {
+  app.delete(['/api/admin/event-albums/:id', '/api/event-albums/:id'], async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       if (!Array.isArray(db.eventAlbums)) {
@@ -1160,13 +1259,16 @@ async function setupRoutes() {
       }
       db.eventAlbums = db.eventAlbums.filter((a) => a.id !== id && a.slug !== id);
 
-      // Unlink any portfolio photos tied to this album
       if (Array.isArray(db.portfolioPhotos)) {
         db.portfolioPhotos.forEach((p) => {
           if (p.albumId === id) {
             p.albumId = undefined;
           }
         });
+      }
+
+      if (isSupabaseConfigured()) {
+        await deleteEventAlbumFromSupabase(id);
       }
 
       saveDatabase();
@@ -1189,14 +1291,7 @@ async function setupRoutes() {
           return res.status(400).json({ error: 'Nenhuma fotografia enviada.' });
         }
 
-        let album = (db.eventAlbums || []).find((a) => a.id === albumId);
-        if (!album) {
-          album = INITIAL_EVENT_ALBUMS.find((a) => a.id === albumId);
-          if (album) {
-            if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
-            db.eventAlbums.push(album);
-          }
-        }
+        let album = await findSingleEventAlbum(albumId);
         if (!album) {
           return res.status(404).json({ error: 'Álbum não encontrado' });
         }
@@ -1232,10 +1327,10 @@ async function setupRoutes() {
             }
           }
 
-          // 2. Local disk fallback
-          if (!photoUrl) {
+          // 2. Local disk fallback (only on non-serverless)
+          if (!photoUrl && !isServerless) {
             try {
-              const albumDir = isServerless ? path.join('/tmp', 'event-albums', album.id) : path.join(process.cwd(), 'public', 'event-albums', album.id);
+              const albumDir = path.join(process.cwd(), 'public', 'event-albums', album.id);
               if (!fs.existsSync(albumDir)) {
                 fs.mkdirSync(albumDir, { recursive: true });
               }
@@ -1243,9 +1338,11 @@ async function setupRoutes() {
               const targetFilePath = path.join(albumDir, localFileName);
               fs.writeFileSync(targetFilePath, file.buffer);
               photoUrl = `/event-albums/${album.id}/${localFileName}`;
-            } catch (diskErr) {
-              photoUrl = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
-            }
+            } catch {}
+          }
+
+          if (!photoUrl) {
+            photoUrl = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
           }
 
           const newPhoto: EventAlbumPhoto = {
@@ -1266,40 +1363,53 @@ async function setupRoutes() {
         }
         album.photoCount = album.photos.length;
 
+        if (isSupabaseConfigured()) {
+          album = await saveEventAlbumToSupabase(album);
+        }
+
+        if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+        const idx = db.eventAlbums.findIndex((a) => a.id === album!.id);
+        if (idx !== -1) db.eventAlbums[idx] = album;
+        else db.eventAlbums.unshift(album);
+
         saveDatabase();
-        res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos, album });
+        return res.status(201).json({ success: true, count: addedPhotos.length, photos: addedPhotos, album });
       } catch (err: any) {
         console.error('[Event Album Multipart Upload Error]:', err);
-        res.status(500).json({ error: 'Erro ao fazer upload das fotos do álbum: ' + (err.message || String(err)) });
+        return res.status(500).json({ error: 'Erro ao fazer upload das fotos do álbum: ' + (err.message || String(err)) });
       }
     }
   );
 
   app.delete(
     ['/api/admin/event-albums/:albumId/photos/:photoId', '/api/event-albums/:albumId/photos/:photoId'],
-    (req: Request, res: Response) => {
-      const { albumId, photoId } = req.params;
-      if (!Array.isArray(db.eventAlbums)) {
-        db.eventAlbums = JSON.parse(JSON.stringify(INITIAL_EVENT_ALBUMS));
-      }
-      let album = db.eventAlbums.find((a) => a.id === albumId || a.slug === albumId);
-      if (!album) {
-        const init = INITIAL_EVENT_ALBUMS.find((a) => a.id === albumId || a.slug === albumId);
-        if (init) {
-          const clone = JSON.parse(JSON.stringify(init));
-          db.eventAlbums.push(clone);
-          album = clone;
-        }
-      }
-      if (!album) return res.status(404).json({ error: 'Álbum não encontrado' });
+    async (req: Request, res: Response) => {
+      try {
+        const { albumId, photoId } = req.params;
+        let album = await findSingleEventAlbum(albumId);
+        if (!album) return res.status(404).json({ error: 'Álbum não encontrado' });
 
-      album.photos = (album.photos || []).filter((p) => p.id !== photoId);
-      album.photoCount = album.photos.length;
-      if (album.coverImage && !album.photos.some((p) => p.imageUrl === album.coverImage)) {
-        album.coverImage = album.photos[0]?.imageUrl || '';
+        const deletedPhoto = (album.photos || []).find((p) => p.id === photoId);
+        album.photos = (album.photos || []).filter((p) => p.id !== photoId);
+        album.photoCount = album.photos.length;
+        if (deletedPhoto && album.coverImage === deletedPhoto.imageUrl) {
+          album.coverImage = album.photos[0]?.imageUrl || '';
+        }
+
+        if (isSupabaseConfigured()) {
+          album = await saveEventAlbumToSupabase(album);
+        }
+
+        if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];
+        const idx = db.eventAlbums.findIndex((a) => a.id === album!.id);
+        if (idx !== -1) db.eventAlbums[idx] = album;
+        else db.eventAlbums.unshift(album);
+
+        saveDatabase();
+        return res.json({ success: true, album });
+      } catch (err: any) {
+        return res.status(500).json({ error: 'Erro ao excluir foto do álbum: ' + (err.message || String(err)) });
       }
-      saveDatabase();
-      res.json({ success: true, album });
     }
   );
 

@@ -8,6 +8,7 @@ import type {
   SelectionRecord,
   PortfolioCategory,
   PortfolioPhoto,
+  EventAlbum,
 } from '../src/types.ts';
 
 // Load environment variables from .env
@@ -1251,3 +1252,244 @@ export async function migrateLocalDatabaseToSupabase(localDb: {
     counts,
   };
 }
+
+// ==============================================================================
+// EVENT ALBUMS CLOUD PERSISTENCE (Supabase Storage `portfolio/event-albums/meta`)
+// ==============================================================================
+
+const EVENT_ALBUMS_BUCKET = 'portfolio';
+const EVENT_ALBUMS_META_DIR = 'event-albums/meta';
+const EVENT_ALBUMS_DELETED_FILE = 'event-albums/meta/_deleted.json';
+
+async function convertDataUrlToStorageBackend(
+  dataUrl: string,
+  storagePath: string
+): Promise<string> {
+  if (!dataUrl || !dataUrl.startsWith('data:')) return dataUrl;
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return dataUrl;
+  try {
+    const contentType = match[1] || 'image/jpeg';
+    const buffer = Buffer.from(match[2], 'base64');
+    const url = await uploadToSupabaseStorage(EVENT_ALBUMS_BUCKET, storagePath, buffer, contentType);
+    return url || dataUrl;
+  } catch {
+    return dataUrl;
+  }
+}
+
+async function readDeletedEventAlbumIdsBackend(client: SupabaseClient): Promise<string[]> {
+  try {
+    const { data, error } = await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .download(EVENT_ALBUMS_DELETED_FILE);
+    if (error || !data) return [];
+    const text = await data.text();
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function loadEventAlbumsFromSupabase(): Promise<{
+  albums: EventAlbum[];
+  deletedIds: string[];
+  hasCloudData: boolean;
+} | null> {
+  const client = getSupabase();
+  if (!client) return null;
+
+  try {
+    const { data: files, error } = await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .list(EVENT_ALBUMS_META_DIR, { limit: 1000 });
+
+    if (error) {
+      console.warn('[Supabase Event Albums] Erro ao listar metadados:', error.message);
+      return null;
+    }
+
+    if (!files || files.length === 0) {
+      return { albums: [], deletedIds: [], hasCloudData: false };
+    }
+
+    const hasDeletedFile = files.some((f) => f.name === '_deleted.json');
+    const deletedIds = hasDeletedFile ? await readDeletedEventAlbumIdsBackend(client) : [];
+    const deletedSet = new Set(deletedIds);
+
+    const albumFiles = files.filter(
+      (f) => f.name && f.name.endsWith('.json') && !f.name.startsWith('_')
+    );
+
+    const albums: EventAlbum[] = [];
+    const BATCH = 15;
+    for (let i = 0; i < albumFiles.length; i += BATCH) {
+      const slice = albumFiles.slice(i, i + BATCH);
+      const downloaded = await Promise.all(
+        slice.map(async (file) => {
+          try {
+            const { data, error: dlErr } = await client.storage
+              .from(EVENT_ALBUMS_BUCKET)
+              .download(`${EVENT_ALBUMS_META_DIR}/${file.name}`);
+            if (dlErr || !data) return null;
+            const parsed = JSON.parse(await data.text());
+            if (!parsed || !parsed.id || deletedSet.has(String(parsed.id))) return null;
+            return {
+              ...parsed,
+              photos: Array.isArray(parsed.photos) ? parsed.photos : [],
+              photoCount: Array.isArray(parsed.photos) ? parsed.photos.length : Number(parsed.photoCount || 0),
+            } as EventAlbum;
+          } catch {
+            return null;
+          }
+        })
+      );
+      downloaded.forEach((a) => {
+        if (a) albums.push(a);
+      });
+    }
+
+    albums.sort((a, b) => {
+      const tA = new Date(a.createdAt || 0).getTime();
+      const tB = new Date(b.createdAt || 0).getTime();
+      return tB - tA;
+    });
+
+    return { albums, deletedIds, hasCloudData: true };
+  } catch (err: any) {
+    console.warn('[Supabase Event Albums] Erro ao carregar álbuns:', err.message);
+    return null;
+  }
+}
+
+export async function getEventAlbumFromSupabase(idOrSlug: string): Promise<EventAlbum | null> {
+  const client = getSupabase();
+  if (!client) return null;
+
+  try {
+    // Fast path: direct download by ID
+    const { data, error } = await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .download(`${EVENT_ALBUMS_META_DIR}/${idOrSlug}.json`);
+    if (!error && data) {
+      const parsed = JSON.parse(await data.text());
+      if (parsed && parsed.id) {
+        return {
+          ...parsed,
+          photos: Array.isArray(parsed.photos) ? parsed.photos : [],
+          photoCount: Array.isArray(parsed.photos) ? parsed.photos.length : Number(parsed.photoCount || 0),
+        };
+      }
+    }
+  } catch {}
+
+  // Fallback: scan list to match by slug
+  const cloud = await loadEventAlbumsFromSupabase();
+  if (!cloud) return null;
+  return cloud.albums.find((a) => a.id === idOrSlug || a.slug === idOrSlug) || null;
+}
+
+export async function saveEventAlbumToSupabase(album: EventAlbum): Promise<EventAlbum> {
+  const client = getSupabase();
+  const normalized: EventAlbum = {
+    ...album,
+    photos: Array.isArray(album.photos) ? album.photos : [],
+    photoCount: Array.isArray(album.photos) ? album.photos.length : Number(album.photoCount || 0),
+  };
+
+  if (!client) return normalized;
+
+  try {
+    // Upload base64 coverImage if needed
+    if (normalized.coverImage && normalized.coverImage.startsWith('data:')) {
+      normalized.coverImage = await convertDataUrlToStorageBackend(
+        normalized.coverImage,
+        `event-albums/${normalized.id}/cover_${Date.now()}.jpg`
+      );
+    }
+
+    // Upload any base64 photos if present
+    if (Array.isArray(normalized.photos)) {
+      for (let i = 0; i < normalized.photos.length; i++) {
+        const ph = normalized.photos[i];
+        if (ph.imageUrl && ph.imageUrl.startsWith('data:')) {
+          ph.imageUrl = await convertDataUrlToStorageBackend(
+            ph.imageUrl,
+            `event-albums/${normalized.id}/photo_${Date.now()}_${i}.jpg`
+          );
+          ph.thumbnailUrl = ph.imageUrl;
+        }
+      }
+    }
+
+    const payload = Buffer.from(JSON.stringify(normalized, null, 2), 'utf-8');
+    const { error } = await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .upload(`${EVENT_ALBUMS_META_DIR}/${normalized.id}.json`, payload, {
+        contentType: 'application/json',
+        upsert: true,
+        cacheControl: '0',
+      });
+
+    if (error) {
+      console.error('[Supabase Event Album] Erro ao salvar JSON no Storage:', error.message);
+      throw error;
+    }
+
+    // Ensure it is not listed in _deleted.json
+    const deletedIds = await readDeletedEventAlbumIdsBackend(client);
+    if (deletedIds.includes(normalized.id)) {
+      const nextDeleted = deletedIds.filter((d) => d !== normalized.id);
+      await client.storage
+        .from(EVENT_ALBUMS_BUCKET)
+        .upload(EVENT_ALBUMS_DELETED_FILE, Buffer.from(JSON.stringify(nextDeleted)), {
+          contentType: 'application/json',
+          upsert: true,
+          cacheControl: '0',
+        });
+    }
+  } catch (err: any) {
+    console.error('[Supabase Event Album] Exceção ao salvar álbum:', err?.message || err);
+    throw err;
+  }
+
+  return normalized;
+}
+
+export async function deleteEventAlbumFromSupabase(albumId: string): Promise<void> {
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.storage
+      .from(EVENT_ALBUMS_BUCKET)
+      .remove([`${EVENT_ALBUMS_META_DIR}/${albumId}.json`]);
+
+    const deletedIds = await readDeletedEventAlbumIdsBackend(client);
+    if (!deletedIds.includes(albumId)) {
+      deletedIds.push(albumId);
+      await client.storage
+        .from(EVENT_ALBUMS_BUCKET)
+        .upload(EVENT_ALBUMS_DELETED_FILE, Buffer.from(JSON.stringify(deletedIds)), {
+          contentType: 'application/json',
+          upsert: true,
+          cacheControl: '0',
+        });
+    }
+
+    // Cleanup album photo files in storage (best-effort)
+    try {
+      const { data: photoFiles } = await client.storage
+        .from(EVENT_ALBUMS_BUCKET)
+        .list(`event-albums/${albumId}`, { limit: 1000 });
+      if (photoFiles && photoFiles.length > 0) {
+        const paths = photoFiles.map((f) => `event-albums/${albumId}/${f.name}`);
+        await client.storage.from(EVENT_ALBUMS_BUCKET).remove(paths);
+      }
+    } catch {}
+  } catch (err: any) {
+    console.warn('[Supabase Event Album] Erro ao excluir álbum do Supabase:', err?.message || err);
+  }
+}
+
