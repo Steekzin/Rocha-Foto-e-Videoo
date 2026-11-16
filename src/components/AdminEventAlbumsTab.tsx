@@ -191,7 +191,7 @@ export const AdminEventAlbumsTab: React.FC = () => {
   };
 
   const handleBatchPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedAlbumForPhotos) return;
+    if (!selectedAlbumForPhotos || uploadProgress !== null) return;
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) return;
     const filesArray = Array.from(fileList) as File[];
@@ -209,14 +209,25 @@ export const AdminEventAlbumsTab: React.FC = () => {
         }
       );
 
-      setStatusMessage({
-        type: 'success',
-        text: `✨ ${res.count || filesArray.length} fotos enviadas para o álbum "${selectedAlbumForPhotos.title}"!`,
-      });
+      if (res.failedCount && res.failedCount > 0) {
+        const previewFailed = (res.failedFiles || []).slice(0, 3).join(', ');
+        setStatusMessage({
+          type: 'error',
+          text: `⚠️ ${res.count} fotos foram salvas no álbum, mas ${res.failedCount} falharam (${previewFailed}${(res.failedFiles || []).length > 3 ? '...' : ''}). Tente enviar novamente as que faltaram.`,
+        });
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `✨ ${res.count} fotos enviadas e salvas com sucesso no álbum "${selectedAlbumForPhotos.title}"!`,
+        });
+      }
 
-      // Reload album photos
-      const updated = await api.getEventAlbum(selectedAlbumForPhotos.id);
-      if (updated) setSelectedAlbumForPhotos(updated);
+      if (res.album) {
+        setSelectedAlbumForPhotos(res.album);
+      } else {
+        const updated = await api.getEventAlbum(selectedAlbumForPhotos.id);
+        if (updated) setSelectedAlbumForPhotos(updated);
+      }
       await loadAlbums();
     } catch (err: any) {
       console.error('[Upload Album Photos Error]:', err);
@@ -538,15 +549,20 @@ export const AdminEventAlbumsTab: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2">
               <label
                 htmlFor="album-photos-upload-input"
-                className="px-4 py-2.5 bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer"
+                className={`px-4 py-2.5 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md flex items-center gap-2 ${
+                  uploadProgress !== null
+                    ? 'bg-[#c99e64]/50 text-[#0c0d0e] cursor-not-allowed pointer-events-none'
+                    : 'bg-[#c99e64] hover:bg-[#d4af37] text-[#0c0d0e] cursor-pointer'
+                }`}
               >
                 <Upload className="w-4 h-4" />
-                <span>+ Fazer Upload de Fotos</span>
+                <span>{uploadProgress !== null ? 'Enviando...' : '+ Fazer Upload de Fotos'}</span>
                 <input
                   id="album-photos-upload-input"
                   type="file"
                   multiple
                   accept="image/*"
+                  disabled={uploadProgress !== null}
                   onChange={handleBatchPhotoUpload}
                   className="hidden"
                 />
