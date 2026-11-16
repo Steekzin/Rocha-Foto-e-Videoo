@@ -3253,6 +3253,7 @@ export const api = {
     }> | null = null;
     let serverHasSupabase = true;
 
+    let sigErrorMsg = '';
     try {
       const collectedSlots: Array<{
         path: string;
@@ -3290,7 +3291,8 @@ export const api = {
         signedSlots = collectedSlots;
       }
     } catch (sigErr: any) {
-      console.warn('[Event Album] Não foi possível obter URLs assinadas, tentando fallback:', sigErr?.message);
+      sigErrorMsg = sigErr?.message || String(sigErr);
+      console.warn('[Event Album] Não foi possível obter URLs assinadas, tentando fallback:', sigErrorMsg);
     }
 
     if (signedSlots && signedSlots.length === total) {
@@ -3437,45 +3439,54 @@ export const api = {
     let updatedAlbum: EventAlbum | undefined = undefined;
     const BATCH_SIZE = 2;
 
-    for (let start = 0; start < total; start += BATCH_SIZE) {
-      const rawBatch = files.slice(start, start + BATCH_SIZE);
-      if (onProgress) {
-        onProgress(start, total, rawBatch[0]?.name);
-      }
+    try {
+      for (let start = 0; start < total; start += BATCH_SIZE) {
+        const rawBatch = files.slice(start, start + BATCH_SIZE);
+        if (onProgress) {
+          onProgress(start, total, rawBatch[0]?.name);
+        }
 
-      const optBatch: File[] = [];
-      for (const rf of rawBatch) {
-        try {
-          optBatch.push(await optimizePhotoForWeb(rf));
-        } catch {
-          optBatch.push(rf);
+        const optBatch: File[] = [];
+        for (const rf of rawBatch) {
+          try {
+            optBatch.push(await optimizePhotoForWeb(rf));
+          } catch {
+            optBatch.push(rf);
+          }
+        }
+
+        const formData = new FormData();
+        for (const f of optBatch) {
+          formData.append('files', f);
+        }
+
+        const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/upload`, {
+          method: 'POST',
+          headers: getAdminHeaders(),
+          body: formData,
+        });
+
+        const data = await parseJsonResponse<{ success: boolean; photos?: EventAlbumPhoto[]; album?: EventAlbum }>(
+          res,
+          'Erro ao enviar fotos do álbum para o servidor.'
+        );
+        if (data && Array.isArray(data.photos)) {
+          allUploaded.push(...data.photos);
+          if (data.album) updatedAlbum = data.album;
+        } else {
+          rawBatch.forEach((f) => failedFiles.push(f.name));
+        }
+
+        if (onProgress) {
+          onProgress(Math.min(start + BATCH_SIZE, total), total, rawBatch[rawBatch.length - 1]?.name);
         }
       }
-
-      const formData = new FormData();
-      for (const f of optBatch) {
-        formData.append('files', f);
-      }
-
-      const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/upload`, {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: formData,
-      });
-
-      const data = await parseJsonResponse<{ success: boolean; photos?: EventAlbumPhoto[]; album?: EventAlbum }>(
-        res,
-        'Erro ao enviar fotos do álbum para o servidor.'
-      );
-      if (data && Array.isArray(data.photos)) {
-        allUploaded.push(...data.photos);
-        if (data.album) updatedAlbum = data.album;
-      } else {
-        rawBatch.forEach((f) => failedFiles.push(f.name));
-      }
-
-      if (onProgress) {
-        onProgress(Math.min(start + BATCH_SIZE, total), total, rawBatch[rawBatch.length - 1]?.name);
+    } catch (fallbackErr: any) {
+      if (allUploaded.length === 0) {
+        if (sigErrorMsg && sigErrorMsg !== fallbackErr?.message) {
+          throw new Error(`${fallbackErr?.message || 'Erro ao enviar fotos do álbum.'} (${sigErrorMsg})`);
+        }
+        throw fallbackErr;
       }
     }
 

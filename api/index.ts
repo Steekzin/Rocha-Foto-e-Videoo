@@ -3,17 +3,9 @@ process.env.IS_SERVERLESS = 'true';
 process.env.VERCEL = process.env.VERCEL || '1';
 process.env.NODE_ENV = 'production';
 
-import app from '../server.ts';
+import app from '../server.js';
 
-// Crucial for Vercel Serverless: Disable internal body parser so Multer/Express can stream multipart files
-export const config = {
-  api: {
-    bodyParser: false,
-    externalResolver: true,
-  },
-};
-
-export default function handler(req: any, res: any) {
+export default async function handler(req: any, res: any): Promise<void> {
   // Add CORS headers immediately
   if (res && res.setHeader) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,28 +14,58 @@ export default function handler(req: any, res: any) {
   }
 
   if (req && req.method === 'OPTIONS') {
-    return res.status(200).end();
+    res.status(200).end();
+    return;
   }
 
   try {
-    // Reconstruct full URL if Vercel rewrite altered req.url
-    const vercelMatched =
-      req.headers['x-matched-path'] ||
-      req.headers['x-vercel-matched-path'] ||
-      req.headers['x-invoke-path'] ||
-      req.headers['x-forwarded-uri'];
+    // Reconstruct full URL & preserve all query params (like ?all=true, ?category=..., ?count=...)
+    const rawUrl = typeof req?.url === 'string' && req.url.length > 0 ? req.url : '/api';
+    const urlObj = new URL(rawUrl, 'http://localhost');
 
-    if (req.query && req.query.path) {
-      const p = Array.isArray(req.query.path) ? req.query.path.join('/') : req.query.path;
-      req.url = `/api/${p.replace(/^\/+/, '')}`;
-    } else if (req.query && req.query.portfolioPath) {
-      const p = Array.isArray(req.query.portfolioPath) ? req.query.portfolioPath.join('/') : req.query.portfolioPath;
-      req.url = `/portfolio/${p.replace(/^\/+/, '')}`;
-    } else if (vercelMatched && typeof vercelMatched === 'string' && vercelMatched.startsWith('/api')) {
-      req.url = vercelMatched;
+    // Merge req.query if Vercel populated it separately
+    if (req?.query && typeof req.query === 'object') {
+      for (const [k, v] of Object.entries(req.query)) {
+        if (v !== undefined && !urlObj.searchParams.has(k)) {
+          if (Array.isArray(v)) {
+            v.forEach((item) => urlObj.searchParams.append(k, String(item)));
+          } else {
+            urlObj.searchParams.set(k, String(v));
+          }
+        }
+      }
+    }
+
+    const pathParam = urlObj.searchParams.get('path');
+    const portfolioPathParam = urlObj.searchParams.get('portfolioPath');
+
+    const vercelMatched =
+      req?.headers?.['x-matched-path'] ||
+      req?.headers?.['x-vercel-matched-path'] ||
+      req?.headers?.['x-invoke-path'] ||
+      req?.headers?.['x-forwarded-uri'];
+
+    if (pathParam) {
+      urlObj.searchParams.delete('path');
+      const qs = urlObj.searchParams.toString();
+      const cleanPath = pathParam.replace(/^\/+/, '');
+      req.url = `/api/${cleanPath}${qs ? `?${qs}` : ''}`;
+    } else if (portfolioPathParam) {
+      urlObj.searchParams.delete('portfolioPath');
+      const qs = urlObj.searchParams.toString();
+      const cleanPath = portfolioPathParam.replace(/^\/+/, '');
+      req.url = `/portfolio/${cleanPath}${qs ? `?${qs}` : ''}`;
     } else if (
-      req &&
-      req.url &&
+      typeof vercelMatched === 'string' &&
+      vercelMatched.startsWith('/api') &&
+      !vercelMatched.startsWith('/api?') &&
+      vercelMatched !== '/api'
+    ) {
+      const qs = urlObj.searchParams.toString();
+      const matchedBase = vercelMatched.split('?')[0];
+      req.url = `${matchedBase}${qs ? `?${qs}` : ''}`;
+    } else if (
+      req?.url &&
       !req.url.startsWith('/api') &&
       !req.url.startsWith('/portfolio') &&
       !req.url.startsWith('/public')
@@ -51,12 +73,37 @@ export default function handler(req: any, res: any) {
       req.url = `/api${req.url.startsWith('/') ? '' : '/'}${req.url}`;
     }
 
-    return app(req, res);
+    req.originalUrl = req.url;
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      if (res && typeof res.once === 'function') {
+        res.once('finish', done);
+        res.once('close', done);
+      }
+
+      app(req, res, (err: any) => {
+        if (err && res && !res.headersSent) {
+          res.status(err.status || err.statusCode || 500).json({
+            error: err.message || 'Erro interno no servidor.',
+            status: err.status || err.statusCode || 500,
+          });
+        }
+        done();
+      });
+    });
   } catch (err: any) {
     console.error('[API Handler Error]:', err);
     if (res && !res.headersSent) {
-      return res.status(500).json({
-        error: 'Erro no manipulador do servidor: ' + (err.message || String(err)),
+      res.status(500).json({
+        error: 'Erro no manipulador do servidor: ' + (err?.message || String(err)),
         status: 500,
       });
     }

@@ -9,7 +9,7 @@ import type {
   PortfolioCategory,
   PortfolioPhoto,
   EventAlbum,
-} from '../src/types.ts';
+} from '../src/types.js';
 
 // Load environment variables from .env
 dotenv.config();

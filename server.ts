@@ -19,7 +19,7 @@ import {
   INITIAL_PORTFOLIO_CATEGORIES,
   INITIAL_PORTFOLIO_PHOTOS,
   INITIAL_EVENT_ALBUMS,
-} from './server/seedData.ts';
+} from './server/seedData.js';
 import type {
   Client,
   PhotoEvent,
@@ -32,7 +32,7 @@ import type {
   EventAlbum,
   EventAlbumPhoto,
   User,
-} from './src/types.ts';
+} from './src/types.js';
 import {
   isSupabaseConfigured,
   testSupabaseConnection,
@@ -71,7 +71,7 @@ import {
   saveEventAlbumToSupabase,
   deleteEventAlbumFromSupabase,
   createEventAlbumSignedUploadUrls,
-} from './server/supabase.ts';
+} from './server/supabase.js';
 
 // Safe directory resolution for ESM and CJS bundle
 const currentDir = typeof __dirname !== 'undefined'
@@ -300,20 +300,21 @@ function saveDatabase() {
 loadDatabase();
 
 async function initSupabaseDatabase() {
-  if (!isSupabaseConfigured()) {
-    console.log('[Database] Supabase não configurado no .env. Utilizando banco local (data/rocha_db.json).');
-    return;
-  }
+  try {
+    if (!isSupabaseConfigured()) {
+      console.log('[Database] Supabase não configurado no .env. Utilizando banco local (data/rocha_db.json).');
+      return;
+    }
 
-  console.log('[Database] Supabase detectado no .env. Testando conexão com a nuvem...');
-  const test = await testSupabaseConnection();
-  if (!test.connected) {
-    console.warn('[Database] Não foi possível conectar ao Supabase:', test.error);
-    console.warn('[Database] Continuando com banco de dados local (data/rocha_db.json).');
-    return;
-  }
+    console.log('[Database] Supabase detectado no .env. Testando conexão com a nuvem...');
+    const test = await testSupabaseConnection();
+    if (!test.connected) {
+      console.warn('[Database] Não foi possível conectar ao Supabase:', test.error);
+      console.warn('[Database] Continuando com banco de dados local (data/rocha_db.json).');
+      return;
+    }
 
-  console.log('[Database] Conexão com Supabase estabelecida com sucesso!');
+    console.log('[Database] Conexão com Supabase estabelecida com sucesso!');
   try {
     const [
       sbClients,
@@ -387,14 +388,27 @@ async function initSupabaseDatabase() {
       console.log('[Database] Dados locais migrados para o Supabase com sucesso!');
     }
   } catch (err: any) {
-    console.error('[Database] Erro ao sincronizar dados do Supabase:', err.message);
+    console.error('[Database] Erro ao sincronizar dados do Supabase:', err?.message || err);
+  }
+  } catch (outerErr: any) {
+    console.error('[Database] Erro ao inicializar Supabase:', outerErr?.message || outerErr);
   }
 }
 
-// Start Supabase sync in background
-initSupabaseDatabase();
+// Start Supabase sync in background safely (never trigger unhandled rejection on serverless)
+initSupabaseDatabase().catch((err: any) => {
+  console.warn('[Database] Falha silenciosa na inicialização do Supabase:', err?.message || err);
+});
 
 const app = express();
+
+// Guard against pre-parsed/consumed request streams in serverless environments
+app.use((req: Request, _res: Response, next: express.NextFunction) => {
+  if (req.readableEnded && req.body !== undefined) {
+    (req as any)._body = true;
+  }
+  next();
+});
 
 // Express parser with generous limit for photo data / base64
 app.use(express.json({ limit: '200mb' }));
@@ -411,7 +425,7 @@ app.use((req: Request, res: Response, next: express.NextFunction) => {
   next();
 });
 
-async function setupRoutes() {
+function setupRoutes() {
   // Supabase Status & Diagnostics
   app.get('/api/supabase/status', async (req: Request, res: Response) => {
     try {
@@ -3912,9 +3926,10 @@ async function startServer() {
   }
 
   // Vite middleware for development (only when not in serverless and in development mode)
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isServerless && process.env.NODE_ENV !== 'production') {
     try {
-      const { createServer: createViteServer } = await import('vite');
+      const viteModuleName = 'vite';
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ viteModuleName);
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: 'spa',

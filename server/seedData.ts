@@ -1,4 +1,4 @@
-import type { Client, PhotoEvent, Gallery, Photo, SelectionRecord, PortfolioItem, PortfolioCategory, PortfolioPhoto, EventAlbum, EventAlbumPhoto } from '../src/types.ts';
+import type { Client, PhotoEvent, Gallery, Photo, SelectionRecord, PortfolioItem, PortfolioCategory, PortfolioPhoto, EventAlbum, EventAlbumPhoto } from '../src/types.js';
 
 export const INITIAL_CLIENTS: Client[] = [
   {
