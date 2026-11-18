@@ -3582,13 +3582,11 @@ export const api = {
           if (toSave.length === 0) return;
           if (!force && toSave.length < 10) return;
 
-          const savedCloud = await persistAlbumPhotosToCloudFallback(toSave);
-          if (savedCloud) {
-            latestAlbum = savedCloud;
-            toSave.forEach((p) => syncedIds.add(p.id));
-          }
+          let saved = false;
+          let regErrMsg = '';
+          let cloudErrMsg = '';
 
-          // Best-effort silent server sync if backend is available
+          // 1. Prefer server /photos/register first (server bypasses Supabase RLS even if browser uses anon key)
           try {
             const regRes = await fetch(
               `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/register`,
@@ -3598,14 +3596,44 @@ export const api = {
                 body: JSON.stringify({ photos: toSave, albumSnapshot }),
               }
             );
-            if (regRes.ok) {
-              const regData = await regRes.json().catch(() => null);
-              if (regData?.album) {
-                latestAlbum = regData.album;
-                toSave.forEach((p) => syncedIds.add(p.id));
-              }
+            const regData = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(
+              regRes,
+              'Erro ao registrar fotos no álbum.'
+            );
+            toSave.forEach((p) => syncedIds.add(p.id));
+            saved = true;
+            if (regData?.album) {
+              latestAlbum = regData.album;
+              const local = getClientEventAlbums();
+              const idx = local.findIndex((a) => a.id === albumId);
+              if (idx !== -1) local[idx] = latestAlbum;
+              else local.unshift(latestAlbum);
+              saveClientEventAlbums(local);
             }
-          } catch {}
+          } catch (regErr: any) {
+            regErrMsg = regErr?.message || String(regErr);
+          }
+
+          // 2. Fallback to browser direct cloud JSON only if server registration failed
+          if (!saved) {
+            try {
+              const savedCloud = await persistAlbumPhotosToCloudFallback(toSave);
+              if (savedCloud) {
+                latestAlbum = savedCloud;
+                toSave.forEach((p) => syncedIds.add(p.id));
+                saved = true;
+              }
+            } catch (cloudErr: any) {
+              cloudErrMsg = cloudErr?.message || String(cloudErr);
+            }
+          }
+
+          if (!saved && force) {
+            const reasons = [sigErrorMsg, regErrMsg, cloudErrMsg].filter(
+              (r, idx, arr) => Boolean(r) && arr.indexOf(r) === idx
+            );
+            throw new Error(reasons.join(' | ') || 'Erro ao salvar fotos enviadas no álbum.');
+          }
         });
         return flushChain;
       };
@@ -3798,29 +3826,36 @@ export const api = {
 
     // 2. Fallback only if server was unreachable
     if (supabase) {
-      const sourceAlbum =
-        (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
-        getClientEventAlbums().find((a) => a.id === albumId);
+      try {
+        const sourceAlbum =
+          (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
+          getClientEventAlbums().find((a) => a.id === albumId);
 
-      if (sourceAlbum) {
-        const currentPhotos = sourceAlbum.photos || [];
-        const deletedPhoto = currentPhotos.find((p) => p.id === photoId);
-        const updatedPhotos = currentPhotos.filter((p) => p.id !== photoId);
-        const albumToSync = await saveEventAlbumToSupabaseCloud({
-          ...sourceAlbum,
-          photos: updatedPhotos,
-          photoCount: updatedPhotos.length,
-          coverImage:
-            deletedPhoto && sourceAlbum.coverImage === deletedPhoto.imageUrl
-              ? updatedPhotos[0]?.imageUrl || ''
-              : sourceAlbum.coverImage,
-        });
-        const local = getClientEventAlbums();
-        const idx = local.findIndex((a) => a.id === albumId);
-        if (idx !== -1) local[idx] = albumToSync;
-        else local.unshift(albumToSync);
-        saveClientEventAlbums(local);
-        return albumToSync;
+        if (sourceAlbum) {
+          const currentPhotos = sourceAlbum.photos || [];
+          const deletedPhoto = currentPhotos.find((p) => p.id === photoId);
+          const updatedPhotos = currentPhotos.filter((p) => p.id !== photoId);
+          const albumToSync = await saveEventAlbumToSupabaseCloud({
+            ...sourceAlbum,
+            photos: updatedPhotos,
+            photoCount: updatedPhotos.length,
+            coverImage:
+              deletedPhoto && sourceAlbum.coverImage === deletedPhoto.imageUrl
+                ? updatedPhotos[0]?.imageUrl || ''
+                : sourceAlbum.coverImage,
+          });
+          const local = getClientEventAlbums();
+          const idx = local.findIndex((a) => a.id === albumId);
+          if (idx !== -1) local[idx] = albumToSync;
+          else local.unshift(albumToSync);
+          saveClientEventAlbums(local);
+          return albumToSync;
+        }
+      } catch (cloudErr: any) {
+        if (backendError) {
+          throw new Error(`${backendError.message} (${cloudErr?.message || cloudErr})`);
+        }
+        throw cloudErr;
       }
     }
 

@@ -404,7 +404,9 @@ const app = express();
 
 // Guard against pre-parsed/consumed request streams in serverless environments
 app.use((req: Request, _res: Response, next: express.NextFunction) => {
-  if (req.readableEnded && req.body !== undefined) {
+  if (req.body !== undefined && req.body !== null && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    (req as any)._body = true;
+  } else if (req.readableEnded && req.body !== undefined) {
     (req as any)._body = true;
   }
   next();

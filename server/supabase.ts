@@ -207,16 +207,51 @@ function isValidSupabaseKey(key: string | undefined): boolean {
   return cleaned.length > 20;
 }
 
+function isServiceOrSecretKey(key: string): boolean {
+  if (!key) return false;
+  if (key.startsWith('sb_secret_')) return true;
+  if (key.startsWith('sb_publishable_')) return false;
+  const parts = key.split('.');
+  if (parts.length === 3) {
+    try {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      if (payload?.role === 'service_role') return true;
+      if (payload?.role === 'anon' || payload?.role === 'authenticated') return false;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function resolveSupabaseCredentials(): { url: string; key: string } {
   const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const rawKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY;
+  const rawServiceKey = sanitizeEnvValue(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const rawFallbackKey = sanitizeEnvValue(
+    process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
+  );
 
-  const url = isValidSupabaseUrl(rawUrl) ? getNormalizedUrl(rawUrl) : DEFAULT_SUPABASE_URL;
-  const key = isValidSupabaseKey(rawKey) ? sanitizeEnvValue(rawKey) : DEFAULT_SUPABASE_KEY;
-  return { url, key };
+  const hasValidEnvUrl = isValidSupabaseUrl(rawUrl);
+  const envUrl = hasValidEnvUrl ? getNormalizedUrl(rawUrl) : DEFAULT_SUPABASE_URL;
+
+  // For the primary project (DEFAULT_SUPABASE_URL), NEVER downgrade from sb_secret_ to an anon key
+  if (envUrl === DEFAULT_SUPABASE_URL) {
+    const key =
+      isValidSupabaseKey(rawServiceKey) && isServiceOrSecretKey(rawServiceKey)
+        ? rawServiceKey
+        : DEFAULT_SUPABASE_KEY;
+    return { url: DEFAULT_SUPABASE_URL, key };
+  }
+
+  // Custom external Supabase project: only use it if a valid key was explicitly provided for it
+  if (isValidSupabaseKey(rawServiceKey)) {
+    return { url: envUrl, key: rawServiceKey };
+  }
+  if (isValidSupabaseKey(rawFallbackKey)) {
+    return { url: envUrl, key: rawFallbackKey };
+  }
+
+  return { url: DEFAULT_SUPABASE_URL, key: DEFAULT_SUPABASE_KEY };
 }
 
 export function isSupabaseConfigured(): boolean {
