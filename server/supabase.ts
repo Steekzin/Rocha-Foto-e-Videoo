@@ -35,7 +35,9 @@ function sanitizeEnvValue(val: string | undefined): string {
 }
 
 function getNormalizedUrl(raw: string | undefined): string {
-  return sanitizeEnvValue(raw).replace(/\/+$/, '');
+  let cleaned = sanitizeEnvValue(raw).replace(/\/+$/, '');
+  cleaned = cleaned.replace(/^(https:\/\/[a-z0-9-]+)\.supabase\.com$/i, '$1.supabase.co');
+  return cleaned;
 }
 
 async function bodyToBuffer(body: any): Promise<Buffer | undefined> {
