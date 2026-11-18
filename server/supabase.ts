@@ -1,4 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import https from 'node:https';
+import http from 'node:http';
 import dotenv from 'dotenv';
 import type {
   Client,
@@ -23,43 +25,202 @@ let supabaseInstance: SupabaseClient | null = null;
 let connectionTested = false;
 let isConnected = false;
 
+function sanitizeEnvValue(val: string | undefined): string {
+  if (!val || typeof val !== 'string') return '';
+  return val
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/[\r\n]+/g, '')
+    .trim();
+}
+
+function getNormalizedUrl(raw: string | undefined): string {
+  return sanitizeEnvValue(raw).replace(/\/+$/, '');
+}
+
+async function bodyToBuffer(body: any): Promise<Buffer | undefined> {
+  if (body === undefined || body === null) return undefined;
+  if (Buffer.isBuffer(body)) return body;
+  if (typeof body === 'string') return Buffer.from(body, 'utf8');
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (typeof Blob !== 'undefined' && body instanceof Blob) {
+    return Buffer.from(await body.arrayBuffer());
+  }
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+    return Buffer.from(body.toString(), 'utf8');
+  }
+  try {
+    return Buffer.from(await new Response(body).arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
+function nodeHttpRequest(
+  urlStr: string,
+  method: string,
+  headersObj: Record<string, string>,
+  bodyBuf?: Buffer
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const isHttps = parsed.protocol === 'https:';
+    const transport = isHttps ? https : http;
+
+    const cleanHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headersObj)) {
+      if (v !== undefined && v !== null) {
+        cleanHeaders[k] = String(v).replace(/[\r\n]+/g, '');
+      }
+    }
+    if (bodyBuf && !Object.keys(cleanHeaders).some((k) => k.toLowerCase() === 'content-length')) {
+      cleanHeaders['Content-Length'] = String(bodyBuf.byteLength);
+    }
+
+    const req = transport.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port ? Number(parsed.port) : isHttps ? 443 : 80,
+        path: `${parsed.pathname}${parsed.search}`,
+        method,
+        headers: cleanHeaders,
+        family: 4,
+        timeout: 30000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on('end', () => {
+          const respBuf = Buffer.concat(chunks);
+          const respHeaders = new Headers();
+          for (const [hk, hv] of Object.entries(res.headers)) {
+            if (hv === undefined) continue;
+            if (Array.isArray(hv)) {
+              hv.forEach((item) => respHeaders.append(hk, item));
+            } else {
+              respHeaders.set(hk, String(hv));
+            }
+          }
+          const status = res.statusCode || 200;
+          const isNullBodyStatus = status === 204 || status === 205 || status === 304 || method === 'HEAD';
+          resolve(
+            new Response(isNullBodyStatus ? null : respBuf, {
+              status,
+              statusText: res.statusMessage || '',
+              headers: respHeaders,
+            })
+          );
+        });
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`Timeout na requisição HTTPS para ${parsed.hostname}`));
+    });
+    req.on('error', (err) => reject(err));
+
+    if (bodyBuf && bodyBuf.byteLength > 0) {
+      req.write(bodyBuf);
+    }
+    req.end();
+  });
+}
+
+function formatNetworkError(err: any): string {
+  const cause = err?.cause || err?.originalError?.cause || err?.originalError;
+  const code = err?.code || cause?.code || '';
+  const msg = cause?.message || err?.message || String(err);
+  return code && !msg.includes(code) ? `${msg} [${code}]` : msg;
+}
+
+const serverSupabaseFetch: typeof fetch = async (input: any, init?: RequestInit): Promise<Response> => {
+  const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input?.url;
+  let lastFetchErr: any = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (err: any) {
+      lastFetchErr = err;
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+  }
+
+  // Fallback to node:https with explicit IPv4 preference (fixes Node/undici fetch failed in Vercel Lambda)
+  try {
+    const method = (init?.method || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
+    const headersObj: Record<string, string> = {};
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      input.headers.forEach((v, k) => {
+        headersObj[k] = v;
+      });
+    }
+    if (init?.headers) {
+      new Headers(init.headers).forEach((v, k) => {
+        headersObj[k] = v;
+      });
+    }
+    const bodyBuf = await bodyToBuffer(init?.body);
+    return await nodeHttpRequest(urlStr, method, headersObj, bodyBuf);
+  } catch (httpsErr: any) {
+    const detail = formatNetworkError(httpsErr) || formatNetworkError(lastFetchErr);
+    throw new Error(`Falha de rede ao conectar ao Supabase (${detail})`);
+  }
+};
+
 function isValidSupabaseUrl(url: string | undefined): boolean {
-  if (!url || typeof url !== 'string') return false;
-  if (!url.startsWith('https://')) return false;
+  const cleaned = getNormalizedUrl(url);
+  if (!cleaned) return false;
   if (
-    url.includes('your-project') ||
-    url.includes('seu-projeto') ||
-    url.includes('placeholder') ||
-    url.includes('example.com')
+    cleaned.includes('your-project') ||
+    cleaned.includes('seu-projeto') ||
+    cleaned.includes('placeholder') ||
+    cleaned.includes('example.com')
   ) {
     return false;
   }
-  return true;
+  try {
+    const parsed = new URL(cleaned);
+    return parsed.protocol === 'https:' && parsed.hostname.includes('.');
+  } catch {
+    return false;
+  }
 }
 
 function isValidSupabaseKey(key: string | undefined): boolean {
-  if (!key || typeof key !== 'string') return false;
+  const cleaned = sanitizeEnvValue(key);
+  if (!cleaned) return false;
   if (
-    key.includes('your-anon') ||
-    key.includes('your-service-role') ||
-    key.includes('sua-chave') ||
-    key.includes('placeholder')
+    cleaned.includes('your-anon') ||
+    cleaned.includes('your-service-role') ||
+    cleaned.includes('sua-chave') ||
+    cleaned.includes('placeholder')
   ) {
     return false;
   }
-  return key.length > 20;
+  if (/\s/.test(cleaned)) return false;
+  return cleaned.length > 20;
 }
 
-export function isSupabaseConfigured(): boolean {
+function resolveSupabaseCredentials(): { url: string; key: string } {
   const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const rawKey =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY;
 
-  const url = isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL;
-  const key = isValidSupabaseKey(rawKey) ? rawKey : DEFAULT_SUPABASE_KEY;
+  const url = isValidSupabaseUrl(rawUrl) ? getNormalizedUrl(rawUrl) : DEFAULT_SUPABASE_URL;
+  const key = isValidSupabaseKey(rawKey) ? sanitizeEnvValue(rawKey) : DEFAULT_SUPABASE_KEY;
+  return { url, key };
+}
 
+export function isSupabaseConfigured(): boolean {
+  const { url, key } = resolveSupabaseCredentials();
   return Boolean(isValidSupabaseUrl(url) && isValidSupabaseKey(key));
 }
 
@@ -69,20 +230,16 @@ export function getSupabase(): SupabaseClient | null {
   }
 
   if (!supabaseInstance) {
-    const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-    const rawKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY;
-
-    const url = (isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL) as string;
-    const key = (isValidSupabaseKey(rawKey) ? rawKey : DEFAULT_SUPABASE_KEY) as string;
+    const { url, key } = resolveSupabaseCredentials();
 
     try {
       supabaseInstance = createClient(url, key, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,
+        },
+        global: {
+          fetch: serverSupabaseFetch,
         },
       });
       console.log(`[Supabase] Cliente inicializado com URL: ${url}`);
@@ -1534,7 +1691,8 @@ export async function createEventAlbumSignedUploadUrls(
           .createSignedUploadUrl(storagePath);
 
         if (error || !data?.signedUrl) {
-          throw new Error(error?.message || `Falha ao gerar URL assinada para ${cleanName}`);
+          const detail = formatNetworkError(error);
+          throw new Error(detail || `Falha ao gerar URL assinada para ${cleanName}`);
         }
 
         const { data: pub } = client.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);

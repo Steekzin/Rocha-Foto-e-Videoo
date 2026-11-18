@@ -232,17 +232,18 @@ function dataUrlToBlobClient(dataUrl: string): { blob: Blob; contentType: string
   }
 }
 
-async function uploadEventAlbumAssetToSupabase(
+async function uploadEventAlbumAssetWithDetails(
   albumId: string,
   fileOrBlob: File | Blob,
   fileName: string,
   contentType?: string,
   maxRetries: number = 3
-): Promise<string | null> {
-  if (!supabase) return null;
+): Promise<{ publicUrl: string | null; error?: string }> {
+  if (!supabase) return { publicUrl: null, error: 'Supabase não configurado no navegador.' };
   const cleanName = (fileName || `foto_${Date.now()}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
   const resolvedType =
     contentType || (fileOrBlob instanceof File ? fileOrBlob.type : 'image/jpeg') || 'image/jpeg';
+  let lastError = '';
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -256,12 +257,15 @@ async function uploadEventAlbumAssetToSupabase(
         });
       if (!error) {
         const { data } = supabase.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);
-        if (data?.publicUrl) return data.publicUrl;
+        if (data?.publicUrl) return { publicUrl: data.publicUrl };
+        lastError = 'URL pública não retornada pelo Supabase Storage.';
       } else {
-        console.warn(`[Supabase Storage Upload Tentativa ${attempt}/${maxRetries}]:`, error.message);
+        lastError = error.message || String(error);
+        console.warn(`[Supabase Storage Upload Tentativa ${attempt}/${maxRetries}]:`, lastError);
       }
     } catch (err: any) {
-      console.warn(`[Supabase Storage Upload Exceção ${attempt}/${maxRetries}]:`, err?.message || err);
+      lastError = err?.message || String(err);
+      console.warn(`[Supabase Storage Upload Exceção ${attempt}/${maxRetries}]:`, lastError);
     }
 
     if (attempt < maxRetries) {
@@ -269,7 +273,24 @@ async function uploadEventAlbumAssetToSupabase(
     }
   }
 
-  return null;
+  return { publicUrl: null, error: lastError || 'Falha no upload direto para o Storage.' };
+}
+
+async function uploadEventAlbumAssetToSupabase(
+  albumId: string,
+  fileOrBlob: File | Blob,
+  fileName: string,
+  contentType?: string,
+  maxRetries: number = 3
+): Promise<string | null> {
+  const { publicUrl } = await uploadEventAlbumAssetWithDetails(
+    albumId,
+    fileOrBlob,
+    fileName,
+    contentType,
+    maxRetries
+  );
+  return publicUrl;
 }
 
 async function readDeletedEventAlbumIdsFromSupabase(): Promise<string[]> {
@@ -3061,6 +3082,15 @@ export const api = {
             }
           }
         } catch {}
+        if (preparedCover.startsWith('data:') && supabase) {
+          const uploaded = await uploadEventAlbumAssetToSupabase(
+            newId,
+            parsed.blob,
+            `cover.${parsed.ext}`,
+            parsed.contentType
+          ).catch(() => null);
+          if (uploaded) preparedCover = uploaded;
+        }
       }
     }
 
@@ -3141,6 +3171,15 @@ export const api = {
             }
           }
         } catch {}
+        if (cleanUpdates.coverImage.startsWith('data:') && supabase) {
+          const uploaded = await uploadEventAlbumAssetToSupabase(
+            id,
+            parsed.blob,
+            `cover.${parsed.ext}`,
+            parsed.contentType
+          ).catch(() => null);
+          if (uploaded) cleanUpdates.coverImage = uploaded;
+        }
       }
     }
 
@@ -3241,9 +3280,69 @@ export const api = {
       onProgress(0, total, files[0]?.name);
     }
 
-    // 1. Best-in-class pipeline: Request Signed Upload URLs from server (bypasses RLS) ->
-    //    Upload optimized photos straight from browser to Supabase Storage (bypasses Vercel 4.5MB & 10s limits) ->
-    //    Register photo URLs atomically via lightweight JSON API call (bypasses RLS)
+    // Resolve authoritative album state + snapshot upfront so all tiers (Signed URLs, Direct Cloud, Multipart)
+    // share consistent ordering and can recover gracefully on cold serverless instances
+    const existingAlbum =
+      (await this.getEventAlbum(albumId).catch(() => null)) ||
+      getClientEventAlbums().find((a) => a.id === albumId || a.slug === albumId) ||
+      null;
+    const baseOrder = existingAlbum?.photos?.length
+      ? Math.max(...existingAlbum.photos.map((p) => Number(p.order || 0)))
+      : 0;
+    const albumSnapshot = existingAlbum
+      ? {
+          id: existingAlbum.id,
+          title: existingAlbum.title,
+          slug: existingAlbum.slug,
+          category: existingAlbum.category,
+          date: existingAlbum.date,
+          description: existingAlbum.description,
+          coverImage: existingAlbum.coverImage,
+          portfolioPhotoId: existingAlbum.portfolioPhotoId,
+          active: existingAlbum.active,
+          featured: existingAlbum.featured,
+          order: existingAlbum.order,
+          createdAt: existingAlbum.createdAt,
+        }
+      : undefined;
+
+    const persistAlbumPhotosToCloudFallback = async (
+      photosToMerge: EventAlbumPhoto[]
+    ): Promise<EventAlbum | null> => {
+      if (!supabase || photosToMerge.length === 0) return null;
+      const latestSource =
+        (await fetchSingleEventAlbumFromSupabaseCloud(albumId).catch(() => null)) ||
+        getClientEventAlbums().find((a) => a.id === albumId || a.slug === albumId) ||
+        existingAlbum;
+      if (!latestSource) return null;
+
+      const mergedPhotos = Array.isArray(latestSource.photos) ? [...latestSource.photos] : [];
+      const seenIds = new Set(mergedPhotos.map((p) => String(p.id)));
+      const seenUrls = new Set(mergedPhotos.map((p) => String(p.imageUrl)));
+      for (const p of photosToMerge) {
+        if (!p || !p.imageUrl) continue;
+        if (seenIds.has(String(p.id)) || seenUrls.has(String(p.imageUrl))) continue;
+        mergedPhotos.push(p);
+        seenIds.add(String(p.id));
+        seenUrls.add(String(p.imageUrl));
+      }
+
+      const saved = await saveEventAlbumToSupabaseCloud({
+        ...latestSource,
+        photos: mergedPhotos,
+        photoCount: mergedPhotos.length,
+        coverImage: latestSource.coverImage || mergedPhotos[0]?.imageUrl || '',
+      });
+
+      const local = getClientEventAlbums();
+      const idx = local.findIndex((a) => a.id === saved.id);
+      if (idx !== -1) local[idx] = saved;
+      else local.unshift(saved);
+      saveClientEventAlbums(local);
+      return saved;
+    };
+
+    // 1. Tier 1 (Primary): Signed Upload URLs from server (bypasses RLS & Vercel 4.5MB/10s limits)
     let signedSlots: Array<{
       path: string;
       signedUrl: string;
@@ -3252,8 +3351,8 @@ export const api = {
       contentType: string;
     }> | null = null;
     let serverHasSupabase = true;
-
     let sigErrorMsg = '';
+
     try {
       const collectedSlots: Array<{
         path: string;
@@ -3318,30 +3417,6 @@ export const api = {
     }
 
     if (signedSlots && signedSlots.length === total) {
-      const existingAlbum =
-        (await this.getEventAlbum(albumId).catch(() => null)) ||
-        getClientEventAlbums().find((a) => a.id === albumId || a.slug === albumId) ||
-        null;
-      const baseOrder = existingAlbum?.photos?.length
-        ? Math.max(...existingAlbum.photos.map((p) => Number(p.order || 0)))
-        : 0;
-      const albumSnapshot = existingAlbum
-        ? {
-            id: existingAlbum.id,
-            title: existingAlbum.title,
-            slug: existingAlbum.slug,
-            category: existingAlbum.category,
-            date: existingAlbum.date,
-            description: existingAlbum.description,
-            coverImage: existingAlbum.coverImage,
-            portfolioPhotoId: existingAlbum.portfolioPhotoId,
-            active: existingAlbum.active,
-            featured: existingAlbum.featured,
-            order: existingAlbum.order,
-            createdAt: existingAlbum.createdAt,
-          }
-        : undefined;
-
       const uploadedSlots: Array<EventAlbumPhoto | null> = new Array(total).fill(null);
       const failedFiles: string[] = [];
       let lastPutError = '';
@@ -3359,26 +3434,36 @@ export const api = {
           if (toSend.length === 0) return;
           if (!force && toSend.length < 10) return;
 
-          const regRes = await fetch(
-            `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/register`,
-            {
-              method: 'POST',
-              headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-              body: JSON.stringify({ photos: toSend, albumSnapshot }),
+          try {
+            const regRes = await fetch(
+              `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/register`,
+              {
+                method: 'POST',
+                headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ photos: toSend, albumSnapshot }),
+              }
+            );
+            const regData = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(
+              regRes,
+              'Erro ao registrar fotos no álbum.'
+            );
+            toSend.forEach((p) => sentIds.add(p.id));
+            if (regData?.album) {
+              latestAlbum = regData.album;
+              const local = getClientEventAlbums();
+              const idx = local.findIndex((a) => a.id === albumId);
+              if (idx !== -1) local[idx] = latestAlbum;
+              else local.unshift(latestAlbum);
+              saveClientEventAlbums(local);
             }
-          );
-          const regData = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(
-            regRes,
-            'Erro ao registrar fotos no álbum.'
-          );
-          toSend.forEach((p) => sentIds.add(p.id));
-          if (regData?.album) {
-            latestAlbum = regData.album;
-            const local = getClientEventAlbums();
-            const idx = local.findIndex((a) => a.id === albumId);
-            if (idx !== -1) local[idx] = latestAlbum;
-            else local.unshift(latestAlbum);
-            saveClientEventAlbums(local);
+          } catch (regErr: any) {
+            const rescued = await persistAlbumPhotosToCloudFallback(toSend).catch(() => null);
+            if (rescued) {
+              toSend.forEach((p) => sentIds.add(p.id));
+              latestAlbum = rescued;
+            } else if (force) {
+              throw regErr;
+            }
           }
         });
         return registerChain;
@@ -3462,7 +3547,6 @@ export const api = {
         );
       }
 
-      // Final flush so all uploaded photos are persisted in Supabase via server (no RLS issues)
       await flushRegisteredPhotos(true);
 
       if (onProgress) {
@@ -3479,33 +3563,158 @@ export const api = {
       };
     }
 
-    // 2. Fallback: Server multipart upload 1 photo per request (used when Supabase is not configured / local mode)
+    // 2. Tier 2 (Fallback): Direct Browser Supabase Storage upload (bypasses server/Vercel limits when signed URLs fail)
+    let directErrorMsg = '';
+    if (supabase) {
+      const directSlots: Array<EventAlbumPhoto | null> = new Array(total).fill(null);
+      const directFailedFiles: string[] = [];
+      let completedCount = 0;
+      let nextIndex = 0;
+      let latestAlbum: EventAlbum | undefined = existingAlbum || undefined;
+      let flushChain: Promise<void> = Promise.resolve();
+      const syncedIds = new Set<string>();
+
+      const flushDirectUploads = (force: boolean = false) => {
+        flushChain = flushChain.then(async () => {
+          const toSave = directSlots.filter(
+            (p): p is EventAlbumPhoto => p !== null && !syncedIds.has(p.id)
+          );
+          if (toSave.length === 0) return;
+          if (!force && toSave.length < 10) return;
+
+          const savedCloud = await persistAlbumPhotosToCloudFallback(toSave);
+          if (savedCloud) {
+            latestAlbum = savedCloud;
+            toSave.forEach((p) => syncedIds.add(p.id));
+          }
+
+          // Best-effort silent server sync if backend is available
+          try {
+            const regRes = await fetch(
+              `${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/register`,
+              {
+                method: 'POST',
+                headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ photos: toSave, albumSnapshot }),
+              }
+            );
+            if (regRes.ok) {
+              const regData = await regRes.json().catch(() => null);
+              if (regData?.album) {
+                latestAlbum = regData.album;
+                toSave.forEach((p) => syncedIds.add(p.id));
+              }
+            }
+          } catch {}
+        });
+        return flushChain;
+      };
+
+      const CONCURRENCY = 2;
+      const runDirectWorker = async () => {
+        while (true) {
+          const i = nextIndex++;
+          if (i >= total) break;
+
+          const originalFile = files[i];
+          if (onProgress) {
+            onProgress(completedCount, total, originalFile.name);
+          }
+
+          let fileToUpload = originalFile;
+          try {
+            fileToUpload = await optimizePhotoForWeb(originalFile);
+          } catch {
+            fileToUpload = originalFile;
+          }
+
+          const cleanJpgName = (originalFile.name || `foto_${i + 1}.jpg`).replace(/\.[^/.]+$/, '') + '.jpg';
+          const { publicUrl, error } = await uploadEventAlbumAssetWithDetails(
+            albumId,
+            fileToUpload,
+            cleanJpgName,
+            fileToUpload.type || 'image/jpeg',
+            3
+          );
+
+          if (publicUrl) {
+            directSlots[i] = {
+              id: `eap-${Date.now()}-${i}-${Math.floor(Math.random() * 100000)}`,
+              albumId,
+              imageUrl: publicUrl,
+              thumbnailUrl: publicUrl,
+              title: (originalFile.name || `Foto ${i + 1}`).replace(/\.[^/.]+$/, ''),
+              order: baseOrder + i + 1,
+              createdAt: new Date().toISOString(),
+            };
+          } else {
+            if (error) directErrorMsg = error;
+            directFailedFiles.push(originalFile.name || `Foto ${i + 1}`);
+          }
+
+          completedCount++;
+          if (onProgress) {
+            onProgress(completedCount, total, originalFile.name);
+          }
+
+          const pendingCount = directSlots.filter((p) => p !== null && !syncedIds.has(p.id)).length;
+          if (pendingCount >= 10) {
+            await flushDirectUploads(false);
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => runDirectWorker()));
+      await flushChain;
+
+      const directUploaded = directSlots.filter((p): p is EventAlbumPhoto => p !== null);
+      if (directUploaded.length > 0) {
+        await flushDirectUploads(true);
+        if (onProgress) {
+          onProgress(total, total);
+        }
+        return {
+          success: true,
+          count: directUploaded.length,
+          failedCount: directFailedFiles.length,
+          failedFiles: directFailedFiles,
+          photos: directUploaded,
+          album: latestAlbum,
+        };
+      }
+    }
+
+    // 3. Tier 3 (Fallback): Server multipart upload 1 photo per request (with albumSnapshot recovery)
     const allUploaded: EventAlbumPhoto[] = [];
     const failedFiles: string[] = [];
     let updatedAlbum: EventAlbum | undefined = undefined;
+    let lastFallbackErr = '';
     const BATCH_SIZE = 1;
 
-    try {
-      for (let start = 0; start < total; start += BATCH_SIZE) {
-        const rawBatch = files.slice(start, start + BATCH_SIZE);
-        if (onProgress) {
-          onProgress(start, total, rawBatch[0]?.name);
-        }
+    for (let start = 0; start < total; start += BATCH_SIZE) {
+      const rawBatch = files.slice(start, start + BATCH_SIZE);
+      if (onProgress) {
+        onProgress(start, total, rawBatch[0]?.name);
+      }
 
-        const optBatch: File[] = [];
-        for (const rf of rawBatch) {
-          try {
-            optBatch.push(await optimizePhotoForWeb(rf, 1600, 0.78));
-          } catch {
-            optBatch.push(rf);
-          }
+      const optBatch: File[] = [];
+      for (const rf of rawBatch) {
+        try {
+          optBatch.push(await optimizePhotoForWeb(rf, 1600, 0.78));
+        } catch {
+          optBatch.push(rf);
         }
+      }
 
-        const formData = new FormData();
-        for (const f of optBatch) {
-          formData.append('files', f);
-        }
+      const formData = new FormData();
+      if (albumSnapshot) {
+        formData.append('albumSnapshot', JSON.stringify(albumSnapshot));
+      }
+      for (const f of optBatch) {
+        formData.append('files', f);
+      }
 
+      try {
         const res = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/photos/upload`, {
           method: 'POST',
           headers: getAdminHeaders(),
@@ -3522,18 +3731,20 @@ export const api = {
         } else {
           rawBatch.forEach((f) => failedFiles.push(f.name));
         }
+      } catch (photoErr: any) {
+        lastFallbackErr = photoErr?.message || String(photoErr);
+        rawBatch.forEach((f) => failedFiles.push(f.name));
+      }
 
-        if (onProgress) {
-          onProgress(Math.min(start + BATCH_SIZE, total), total, rawBatch[rawBatch.length - 1]?.name);
-        }
+      if (onProgress) {
+        onProgress(Math.min(start + BATCH_SIZE, total), total, rawBatch[rawBatch.length - 1]?.name);
       }
-    } catch (fallbackErr: any) {
-      if (allUploaded.length === 0) {
-        if (sigErrorMsg && sigErrorMsg !== fallbackErr?.message) {
-          throw new Error(`${fallbackErr?.message || 'Erro ao enviar fotos do álbum.'} (${sigErrorMsg})`);
-        }
-        throw fallbackErr;
-      }
+    }
+
+    if (allUploaded.length === 0) {
+      const reasons = [lastFallbackErr, sigErrorMsg, directErrorMsg]
+        .filter((r, idx, arr) => Boolean(r) && arr.indexOf(r) === idx);
+      throw new Error(reasons.join(' | ') || 'Erro ao enviar fotos do álbum para o servidor.');
     }
 
     if (updatedAlbum) {
@@ -3554,7 +3765,7 @@ export const api = {
     };
   },
 
-  async deleteEventAlbumPhoto(albumId: string, photoId: string): Promise<void> {
+  async deleteEventAlbumPhoto(albumId: string, photoId: string): Promise<EventAlbum | void> {
     let backendAlbum: EventAlbum | null = null;
     let backendError: Error | null = null;
 
@@ -3582,7 +3793,7 @@ export const api = {
       if (idx !== -1) local[idx] = backendAlbum;
       else local.unshift(backendAlbum);
       saveClientEventAlbums(local);
-      return;
+      return backendAlbum;
     }
 
     // 2. Fallback only if server was unreachable
@@ -3609,7 +3820,7 @@ export const api = {
         if (idx !== -1) local[idx] = albumToSync;
         else local.unshift(albumToSync);
         saveClientEventAlbums(local);
-        return;
+        return albumToSync;
       }
     }
 

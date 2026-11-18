@@ -66,17 +66,24 @@ export const AdminEventAlbumsTab: React.FC = () => {
     loadAlbums();
   }, []);
 
-  const loadAlbums = async () => {
+  const loadAlbums = async (preferredAlbum?: EventAlbum | null) => {
     try {
       setLoading(true);
       const [albumsData, photosData] = await Promise.all([
         api.getEventAlbums(undefined, true),
         api.getPortfolioPhotos({ isAdmin: true }).catch(() => []),
       ]);
-      setAlbums(albumsData || []);
+      const normalizedList = (albumsData || []).map((a) =>
+        preferredAlbum && a.id === preferredAlbum.id ? preferredAlbum : a
+      );
+      if (preferredAlbum && !normalizedList.some((a) => a.id === preferredAlbum.id)) {
+        normalizedList.unshift(preferredAlbum);
+      }
+      setAlbums(normalizedList);
       setPortfolioPhotos(photosData || []);
-      if (selectedAlbumForPhotos) {
-        const updated = (albumsData || []).find((a) => a.id === selectedAlbumForPhotos.id);
+      const targetId = preferredAlbum?.id || selectedAlbumForPhotos?.id;
+      if (targetId) {
+        const updated = normalizedList.find((a) => a.id === targetId);
         if (updated) setSelectedAlbumForPhotos(updated);
       }
     } catch (err: any) {
@@ -223,13 +230,9 @@ export const AdminEventAlbumsTab: React.FC = () => {
         });
       }
 
-      if (res.album) {
-        setSelectedAlbumForPhotos(res.album);
-      } else {
-        const updated = await api.getEventAlbum(selectedAlbumForPhotos.id);
-        if (updated) setSelectedAlbumForPhotos(updated);
-      }
-      await loadAlbums();
+      const latestSelected = res.album || (await api.getEventAlbum(selectedAlbumForPhotos.id)) || undefined;
+      if (latestSelected) setSelectedAlbumForPhotos(latestSelected);
+      await loadAlbums(latestSelected);
     } catch (err: any) {
       console.error('[Upload Album Photos Error]:', err);
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao fazer upload das fotos do álbum.' });
@@ -245,12 +248,12 @@ export const AdminEventAlbumsTab: React.FC = () => {
     if (!photoToDelete || !selectedAlbumForPhotos) return;
     try {
       setIsDeleting(true);
-      await api.deleteEventAlbumPhoto(selectedAlbumForPhotos.id, photoToDelete.id);
+      const updatedFromDelete = await api.deleteEventAlbumPhoto(selectedAlbumForPhotos.id, photoToDelete.id);
       setStatusMessage({ type: 'success', text: 'Fotografia excluída do álbum com sucesso.' });
       setPhotoToDelete(null);
-      const updated = await api.getEventAlbum(selectedAlbumForPhotos.id);
+      const updated = updatedFromDelete || (await api.getEventAlbum(selectedAlbumForPhotos.id));
       if (updated) setSelectedAlbumForPhotos(updated);
-      await loadAlbums();
+      await loadAlbums(updated || undefined);
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Erro ao excluir foto do álbum.' });
     } finally {
@@ -259,31 +262,39 @@ export const AdminEventAlbumsTab: React.FC = () => {
   };
 
   const handleAddSamplePhotos = async () => {
-    if (!selectedAlbumForPhotos) return;
+    if (!selectedAlbumForPhotos || uploadProgress !== null) return;
     try {
       setLoading(true);
-      // Create sample photos from Unsplash
       const sampleUrls = [
         'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80',
         'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=1200&q=80',
         'https://images.unsplash.com/photo-1583939003579-730e3918a45a?auto=format&fit=crop&w=1200&q=80',
       ];
-      // Fetch each image as a Blob/File and upload
+      setUploadProgress({ current: 0, total: sampleUrls.length });
       const files: File[] = [];
       for (let i = 0; i < sampleUrls.length; i++) {
         const resp = await fetch(sampleUrls[i]);
         const blob = await resp.blob();
         files.push(new File([blob], `foto_amostra_${i + 1}.jpg`, { type: 'image/jpeg' }));
       }
-      await api.uploadEventAlbumPhotos(selectedAlbumForPhotos.id, files);
-      const updated = await api.getEventAlbum(selectedAlbumForPhotos.id);
+      const res = await api.uploadEventAlbumPhotos(
+        selectedAlbumForPhotos.id,
+        files,
+        (current, total, fileName) => {
+          setUploadProgress({ current, total });
+          if (fileName) setCurrentUploadingFileName(fileName);
+        }
+      );
+      const updated = res.album || (await api.getEventAlbum(selectedAlbumForPhotos.id));
       if (updated) setSelectedAlbumForPhotos(updated);
-      await loadAlbums();
+      await loadAlbums(updated || undefined);
       setStatusMessage({ type: 'success', text: 'Fotos de exemplo adicionadas com sucesso!' });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: 'Erro ao adicionar fotos de teste: ' + err.message });
     } finally {
       setLoading(false);
+      setUploadProgress(null);
+      setCurrentUploadingFileName('');
     }
   };
 

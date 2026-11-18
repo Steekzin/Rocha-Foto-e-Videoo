@@ -12,38 +12,58 @@ const getFallbackKey = () => {
   }
 };
 
+function sanitizeEnvValue(val: string | undefined): string {
+  if (!val || typeof val !== 'string') return '';
+  return val
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/[\r\n]+/g, '')
+    .trim();
+}
+
+function getNormalizedUrl(raw: string | undefined): string {
+  return sanitizeEnvValue(raw).replace(/\/+$/, '');
+}
+
 function isValidSupabaseUrl(url: string | undefined): boolean {
-  if (!url || typeof url !== 'string') return false;
-  if (!url.startsWith('https://')) return false;
+  const cleaned = getNormalizedUrl(url);
+  if (!cleaned) return false;
   if (
-    url.includes('your-project') ||
-    url.includes('seu-projeto') ||
-    url.includes('placeholder') ||
-    url.includes('example.com')
+    cleaned.includes('your-project') ||
+    cleaned.includes('seu-projeto') ||
+    cleaned.includes('placeholder') ||
+    cleaned.includes('example.com')
   ) {
     return false;
   }
-  return true;
+  try {
+    const parsed = new URL(cleaned);
+    return parsed.protocol === 'https:' && parsed.hostname.includes('.');
+  } catch {
+    return false;
+  }
 }
 
 function isValidSupabaseKey(key: string | undefined): boolean {
-  if (!key || typeof key !== 'string') return false;
+  const cleaned = sanitizeEnvValue(key);
+  if (!cleaned) return false;
   if (
-    key.includes('your-anon') ||
-    key.includes('your-service-role') ||
-    key.includes('sua-chave') ||
-    key.includes('placeholder')
+    cleaned.includes('your-anon') ||
+    cleaned.includes('your-service-role') ||
+    cleaned.includes('sua-chave') ||
+    cleaned.includes('placeholder')
   ) {
     return false;
   }
-  return key.length > 20;
+  if (/\s/.test(cleaned)) return false;
+  return cleaned.length > 20;
 }
 
 const rawUrl = metaEnv.VITE_SUPABASE_URL || metaEnv.SUPABASE_URL;
 const rawKey = metaEnv.VITE_SUPABASE_ANON_KEY || metaEnv.SUPABASE_ANON_KEY;
 
-const supabaseUrl = isValidSupabaseUrl(rawUrl) ? rawUrl : DEFAULT_SUPABASE_URL;
-const supabaseAnonKey = isValidSupabaseKey(rawKey) ? rawKey : getFallbackKey();
+const supabaseUrl = isValidSupabaseUrl(rawUrl) ? getNormalizedUrl(rawUrl) : DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = isValidSupabaseKey(rawKey) ? sanitizeEnvValue(rawKey) : getFallbackKey();
 
 export const isClientSupabaseConfigured = Boolean(
   isValidSupabaseUrl(supabaseUrl) && isValidSupabaseKey(supabaseAnonKey)

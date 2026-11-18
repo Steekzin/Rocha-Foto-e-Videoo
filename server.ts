@@ -1425,6 +1425,32 @@ function setupRoutes() {
         }
 
         let album = await findSingleEventAlbum(albumId);
+        if (!album && req.body?.albumSnapshot) {
+          try {
+            const snap =
+              typeof req.body.albumSnapshot === 'string'
+                ? JSON.parse(req.body.albumSnapshot)
+                : req.body.albumSnapshot;
+            if (snap && typeof snap === 'object') {
+              album = {
+                id: albumId,
+                title: String(snap.title || 'Álbum de Evento').trim() || 'Álbum de Evento',
+                slug: String(snap.slug || toSlug(snap.title || albumId)),
+                category: String(snap.category || 'Casamentos'),
+                date: String(snap.date || new Date().toISOString().split('T')[0]),
+                description: String(snap.description || ''),
+                coverImage: String(snap.coverImage || ''),
+                photoCount: 0,
+                photos: [],
+                portfolioPhotoId: snap.portfolioPhotoId || undefined,
+                active: snap.active !== false,
+                featured: Boolean(snap.featured),
+                order: Number(snap.order || 1),
+                createdAt: String(snap.createdAt || new Date().toISOString()),
+              };
+            }
+          } catch {}
+        }
         if (!album) {
           return res.status(404).json({ error: 'Álbum não encontrado' });
         }

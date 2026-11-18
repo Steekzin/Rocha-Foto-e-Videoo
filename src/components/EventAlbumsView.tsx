@@ -394,12 +394,22 @@ export const EventAlbumsView: React.FC<EventAlbumsViewProps> = ({ onContactClick
                   className="group relative rounded-2xl overflow-hidden cursor-pointer shadow-lg hover:shadow-2xl transition-all duration-500 aspect-[3/4] bg-[#12151a]"
                 >
                   {/* Cover Image */}
-                  <img
-                    src={album.coverImage || (album.photos && album.photos[0]?.imageUrl) || ''}
-                    alt={album.title}
-                    loading="lazy"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out"
-                  />
+                  {(() => {
+                    const resolvedCover = album.coverImage || (album.photos && album.photos[0]?.imageUrl) || '';
+                    return resolvedCover ? (
+                      <img
+                        src={resolvedCover}
+                        alt={album.title}
+                        loading="lazy"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-[#525966] bg-[#14171d]">
+                        <Camera className="w-10 h-10 opacity-40 mb-2" />
+                        <span className="text-[11px] uppercase tracking-wider">Sem capa</span>
+                      </div>
+                    );
+                  })()}
 
                   {/* Dark gradient overlay */}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/30 opacity-70 group-hover:opacity-90 transition-opacity" />
