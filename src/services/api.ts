@@ -3262,29 +3262,51 @@ export const api = {
         publicUrl: string;
         contentType: string;
       }> = [];
-      const URL_CHUNK = 50;
+      const URL_CHUNK = 25;
       for (let start = 0; start < total; start += URL_CHUNK) {
         const chunk = files.slice(start, start + URL_CHUNK);
-        const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/signed-upload-urls`, {
-          method: 'POST',
-          headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            files: chunk.map((f) => ({
-              fileName: f.name.replace(/\.[^/.]+$/, '') + '.jpg',
-              contentType: 'image/jpeg',
-            })),
-          }),
-        });
-        const sigData = await parseJsonResponse<{
+        let chunkData: {
           configured: boolean;
           uploads: Array<{ path: string; signedUrl: string; token: string; publicUrl: string; contentType: string }>;
-        }>(sigRes, 'Erro ao preparar upload de fotos.');
-        if (!sigData.configured) {
+        } | null = null;
+        let lastChunkErr: any = null;
+
+        for (let sigAttempt = 1; sigAttempt <= 2; sigAttempt++) {
+          try {
+            const sigRes = await fetch(`${API_BASE}/admin/event-albums/${encodeURIComponent(albumId)}/signed-upload-urls`, {
+              method: 'POST',
+              headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                files: chunk.map((f) => ({
+                  fileName: f.name.replace(/\.[^/.]+$/, '') + '.jpg',
+                  contentType: 'image/jpeg',
+                })),
+              }),
+            });
+            chunkData = await parseJsonResponse<{
+              configured: boolean;
+              uploads: Array<{ path: string; signedUrl: string; token: string; publicUrl: string; contentType: string }>;
+            }>(sigRes, 'Erro ao preparar upload de fotos.');
+            lastChunkErr = null;
+            break;
+          } catch (attemptErr: any) {
+            lastChunkErr = attemptErr;
+            if (sigAttempt < 2) {
+              await new Promise((r) => setTimeout(r, 400));
+            }
+          }
+        }
+
+        if (lastChunkErr || !chunkData) {
+          throw lastChunkErr || new Error('Erro ao preparar upload de fotos.');
+        }
+
+        if (!chunkData.configured) {
           serverHasSupabase = false;
           break;
         }
-        if (Array.isArray(sigData.uploads)) {
-          collectedSlots.push(...sigData.uploads);
+        if (Array.isArray(chunkData.uploads)) {
+          collectedSlots.push(...chunkData.uploads);
         }
       }
       if (serverHasSupabase && collectedSlots.length === total) {
@@ -3296,13 +3318,33 @@ export const api = {
     }
 
     if (signedSlots && signedSlots.length === total) {
-      const existingAlbum = await this.getEventAlbum(albumId).catch(() => null);
+      const existingAlbum =
+        (await this.getEventAlbum(albumId).catch(() => null)) ||
+        getClientEventAlbums().find((a) => a.id === albumId || a.slug === albumId) ||
+        null;
       const baseOrder = existingAlbum?.photos?.length
         ? Math.max(...existingAlbum.photos.map((p) => Number(p.order || 0)))
         : 0;
+      const albumSnapshot = existingAlbum
+        ? {
+            id: existingAlbum.id,
+            title: existingAlbum.title,
+            slug: existingAlbum.slug,
+            category: existingAlbum.category,
+            date: existingAlbum.date,
+            description: existingAlbum.description,
+            coverImage: existingAlbum.coverImage,
+            portfolioPhotoId: existingAlbum.portfolioPhotoId,
+            active: existingAlbum.active,
+            featured: existingAlbum.featured,
+            order: existingAlbum.order,
+            createdAt: existingAlbum.createdAt,
+          }
+        : undefined;
 
       const uploadedSlots: Array<EventAlbumPhoto | null> = new Array(total).fill(null);
       const failedFiles: string[] = [];
+      let lastPutError = '';
       let completedCount = 0;
       let nextIndex = 0;
       let registerChain: Promise<void> = Promise.resolve();
@@ -3322,7 +3364,7 @@ export const api = {
             {
               method: 'POST',
               headers: { ...getAdminHeaders(), 'Content-Type': 'application/json' },
-              body: JSON.stringify({ photos: toSend }),
+              body: JSON.stringify({ photos: toSend, albumSnapshot }),
             }
           );
           const regData = await parseJsonResponse<{ success: boolean; album?: EventAlbum }>(
@@ -3374,7 +3416,11 @@ export const api = {
                 uploadOk = true;
                 break;
               }
-            } catch {}
+              const errTxt = await putRes.text().catch(() => '');
+              lastPutError = `HTTP ${putRes.status}${errTxt ? `: ${errTxt.slice(0, 120)}` : ''}`;
+            } catch (putErr: any) {
+              lastPutError = putErr?.message || String(putErr);
+            }
             if (attempt < 3) {
               await new Promise((r) => setTimeout(r, 500 * attempt));
             }
@@ -3412,7 +3458,7 @@ export const api = {
       const allUploaded = uploadedSlots.filter((p): p is EventAlbumPhoto => p !== null);
       if (allUploaded.length === 0) {
         throw new Error(
-          'Não foi possível enviar as fotografias para o armazenamento na nuvem. Verifique sua conexão e tente novamente.'
+          `Não foi possível enviar as fotografias para o armazenamento na nuvem.${lastPutError ? ` (${lastPutError})` : ''}`
         );
       }
 
@@ -3433,11 +3479,11 @@ export const api = {
       };
     }
 
-    // 2. Fallback: Server multipart upload in micro-batches of 2 (used when Supabase is not configured / local mode)
+    // 2. Fallback: Server multipart upload 1 photo per request (used when Supabase is not configured / local mode)
     const allUploaded: EventAlbumPhoto[] = [];
     const failedFiles: string[] = [];
     let updatedAlbum: EventAlbum | undefined = undefined;
-    const BATCH_SIZE = 2;
+    const BATCH_SIZE = 1;
 
     try {
       for (let start = 0; start < total; start += BATCH_SIZE) {
@@ -3449,7 +3495,7 @@ export const api = {
         const optBatch: File[] = [];
         for (const rf of rawBatch) {
           try {
-            optBatch.push(await optimizePhotoForWeb(rf));
+            optBatch.push(await optimizePhotoForWeb(rf, 1600, 0.78));
           } catch {
             optBatch.push(rf);
           }

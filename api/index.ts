@@ -1,9 +1,34 @@
-// Set serverless environment flags BEFORE loading any server logic
-process.env.IS_SERVERLESS = 'true';
-process.env.VERCEL = process.env.VERCEL || '1';
-process.env.NODE_ENV = 'production';
+let cachedAppPromise: Promise<any> | null = null;
 
-import app from '../server.js';
+async function getServerApp(): Promise<any> {
+  process.env.IS_SERVERLESS = 'true';
+  process.env.VERCEL = process.env.VERCEL || '1';
+  process.env.NODE_ENV = 'production';
+
+  if (!cachedAppPromise) {
+    cachedAppPromise = import('../server.js')
+      .then((mod: any) => {
+        const resolved =
+          typeof mod?.default === 'function'
+            ? mod.default
+            : typeof mod?.default?.default === 'function'
+            ? mod.default.default
+            : typeof mod?.app === 'function'
+            ? mod.app
+            : mod?.default?.app;
+        if (typeof resolved !== 'function') {
+          throw new Error('Aplicação Express não encontrada no módulo do servidor.');
+        }
+        return resolved;
+      })
+      .catch((err) => {
+        cachedAppPromise = null;
+        throw err;
+      });
+  }
+
+  return cachedAppPromise;
+}
 
 export default async function handler(req: any, res: any): Promise<void> {
   // Add CORS headers immediately
@@ -19,6 +44,8 @@ export default async function handler(req: any, res: any): Promise<void> {
   }
 
   try {
+    const app = await getServerApp();
+
     // Reconstruct full URL & preserve all query params (like ?all=true, ?category=..., ?count=...)
     const rawUrl = typeof req?.url === 'string' && req.url.length > 0 ? req.url : '/api';
     const urlObj = new URL(rawUrl, 'http://localhost');

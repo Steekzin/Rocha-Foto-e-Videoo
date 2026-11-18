@@ -1338,6 +1338,25 @@ function setupRoutes() {
         }
 
         let album = await findSingleEventAlbum(albumId);
+        if (!album && req.body?.albumSnapshot && typeof req.body.albumSnapshot === 'object') {
+          const snap = req.body.albumSnapshot;
+          album = {
+            id: albumId,
+            title: String(snap.title || 'Álbum de Evento').trim() || 'Álbum de Evento',
+            slug: String(snap.slug || toSlug(snap.title || albumId)),
+            category: String(snap.category || 'Casamentos'),
+            date: String(snap.date || new Date().toISOString().split('T')[0]),
+            description: String(snap.description || ''),
+            coverImage: String(snap.coverImage || ''),
+            photoCount: 0,
+            photos: [],
+            portfolioPhotoId: snap.portfolioPhotoId || undefined,
+            active: snap.active !== false,
+            featured: Boolean(snap.featured),
+            order: Number(snap.order || 1),
+            createdAt: String(snap.createdAt || new Date().toISOString()),
+          };
+        }
         if (!album) {
           return res.status(404).json({ error: 'Álbum não encontrado' });
         }
@@ -1512,6 +1531,17 @@ function setupRoutes() {
 
         if (isSupabaseConfigured()) {
           album = await saveEventAlbumToSupabase(album);
+          // Best-effort cleanup of orphaned photo file inside event-albums/<albumId>/
+          if (deletedPhoto?.imageUrl) {
+            try {
+              const marker = `/portfolio/event-albums/${album.id}/`;
+              const idxMarker = deletedPhoto.imageUrl.indexOf(marker);
+              if (idxMarker !== -1) {
+                const storagePath = `event-albums/${album.id}/${deletedPhoto.imageUrl.slice(idxMarker + marker.length).split('?')[0]}`;
+                await deleteFromSupabaseStorage('portfolio', [storagePath]);
+              }
+            } catch {}
+          }
         }
 
         if (!Array.isArray(db.eventAlbums)) db.eventAlbums = [];

@@ -1517,29 +1517,36 @@ export async function createEventAlbumSignedUploadUrls(
     token: string;
     publicUrl: string;
     contentType: string;
-  }> = [];
+  }> = new Array(files.length);
 
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    const cleanName = (f.fileName || `foto_${i + 1}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const storagePath = `event-albums/${albumId}/${Date.now()}_${i}_${Math.floor(Math.random() * 1000000)}_${cleanName}`;
+  const CONCURRENCY = 15;
+  const baseTs = Date.now();
+  for (let start = 0; start < files.length; start += CONCURRENCY) {
+    const slice = files.slice(start, start + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (f, offset) => {
+        const i = start + offset;
+        const cleanName = (f.fileName || `foto_${i + 1}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storagePath = `event-albums/${albumId}/${baseTs}_${i}_${Math.floor(Math.random() * 1000000)}_${cleanName}`;
 
-    const { data, error } = await client.storage
-      .from(EVENT_ALBUMS_BUCKET)
-      .createSignedUploadUrl(storagePath);
+        const { data, error } = await client.storage
+          .from(EVENT_ALBUMS_BUCKET)
+          .createSignedUploadUrl(storagePath);
 
-    if (error || !data?.signedUrl) {
-      throw new Error(error?.message || `Falha ao gerar URL assinada para ${cleanName}`);
-    }
+        if (error || !data?.signedUrl) {
+          throw new Error(error?.message || `Falha ao gerar URL assinada para ${cleanName}`);
+        }
 
-    const { data: pub } = client.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);
-    uploads.push({
-      path: data.path || storagePath,
-      signedUrl: data.signedUrl,
-      token: data.token,
-      publicUrl: pub?.publicUrl || '',
-      contentType: f.contentType || 'image/jpeg',
-    });
+        const { data: pub } = client.storage.from(EVENT_ALBUMS_BUCKET).getPublicUrl(storagePath);
+        uploads[i] = {
+          path: data.path || storagePath,
+          signedUrl: data.signedUrl,
+          token: data.token,
+          publicUrl: pub?.publicUrl || '',
+          contentType: f.contentType || 'image/jpeg',
+        };
+      })
+    );
   }
 
   return { configured: true, uploads };

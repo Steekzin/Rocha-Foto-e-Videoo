@@ -570,8 +570,10 @@ export const AdminEventAlbumsTab: React.FC = () => {
               </label>
 
               <button
+                type="button"
+                disabled={uploadProgress !== null}
                 onClick={handleAddSamplePhotos}
-                className="px-3.5 py-2.5 bg-[#1b1f28] hover:bg-[#252a37] text-xs text-[#d1d5db] rounded-xl border border-[#2b313d] transition-colors"
+                className="px-3.5 py-2.5 bg-[#1b1f28] hover:bg-[#252a37] text-xs text-[#d1d5db] rounded-xl border border-[#2b313d] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 + Adicionar Amostras
               </button>
@@ -585,6 +587,26 @@ export const AdminEventAlbumsTab: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {statusMessage && (
+            <div
+              className={`mt-4 p-3.5 rounded-xl border flex items-center justify-between text-xs ${
+                statusMessage.type === 'success'
+                  ? 'bg-[#10b981]/10 border-[#10b981]/30 text-[#10b981]'
+                  : statusMessage.type === 'error'
+                  ? 'bg-[#ef4444]/10 border-[#ef4444]/30 text-[#ef4444]'
+                  : 'bg-[#3b82f6]/10 border-[#3b82f6]/30 text-[#3b82f6]'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{statusMessage.text}</span>
+              </div>
+              <button onClick={() => setStatusMessage(null)} className="text-current opacity-70 hover:opacity-100">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* Upload Progress Bar */}
           {uploadProgress && (
@@ -822,6 +844,7 @@ export const AdminEventAlbumsTab: React.FC = () => {
                       className="hidden"
                       onChange={async (e) => {
                         const f = e.target.files?.[0];
+                        e.target.value = '';
                         if (f) {
                           const optimizedCover = await optimizePhotoForWeb(f, 1600, 0.85).catch(() => f);
                           const reader = new FileReader();
